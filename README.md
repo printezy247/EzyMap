@@ -1,0 +1,2 @@
+# EzyMap
+TradingView Indicator
