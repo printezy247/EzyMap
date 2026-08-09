@@ -135,7 +135,7 @@ void BuildGUI()
    MakeButton("BTN_RESET_BASELINE",26,212,280,28,"RESET DRAWDOWN BASELINE",InpNeutralBtnColor,InpNeutralTextColor,9);
 
    MakeLabel("NOTE",26,248,"Ready.",InpTextColor,8,false);
-   MakeLabel("NOTE2",26,266,"",InpTextColor,8,false);
+   MakeLabel("NOTE2",26,266," ",InpTextColor,8,false);
 }
 
 //----------------------------- Persistence ---------------------------
