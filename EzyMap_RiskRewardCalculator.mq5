@@ -216,12 +216,12 @@ void BuildGUI()
    MakeButton("BTN_CALC",26,388,280,28,"CALCULATE",InpButtonColor,InpButtonTextColor,10);
 
    MakeLabel("RES_HEAD",26,430,"RESULTS",InpTextColor,9,true);
-   MakeLabel("RES_RISK",26,446,"",InpSellColor,9,false);
-   MakeLabel("RES_REWARD",26,462,"",InpBuyColor,9,false);
-   MakeLabel("RES_RR",26,478,"",InpAccentColor,9,true);
-   MakeLabel("RES_WINRATE",26,494,"",InpTextColor,8,false);
-   MakeLabel("RES_BE",26,510,"",InpAccentColor,9,false);
-   MakeLabel("RES_NET",26,526,"",InpTextColor,8,false);
+   MakeLabel("RES_RISK",26,446," ",InpSellColor,9,false);
+   MakeLabel("RES_REWARD",26,462," ",InpBuyColor,9,false);
+   MakeLabel("RES_RR",26,478," ",InpAccentColor,9,true);
+   MakeLabel("RES_WINRATE",26,494," ",InpTextColor,8,false);
+   MakeLabel("RES_BE",26,510," ",InpAccentColor,9,false);
+   MakeLabel("RES_NET",26,526," ",InpTextColor,8,false);
    MakeLabel("RES_NOTE",26,542,"Pick Direction + Pair above to begin.",InpTextColor,8,false);
 
    RefreshDirButtons();

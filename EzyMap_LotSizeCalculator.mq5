@@ -221,9 +221,9 @@ void BuildGUI()
    MakeButton("BTN_CALC",26,266,280,32,"CALCULATE LOT SIZE",InpButtonColor,InpButtonTextColor,10);
 
    MakeLabel("RES_HEAD",26,310,"RESULTS",InpTextColor,9,true);
-   MakeLabel("RES_MIN",26,328,"",InpMinRiskColor,9,false);
-   MakeLabel("RES_MED",26,346,"",InpMedRiskColor,9,false);
-   MakeLabel("RES_MAX",26,364,"",InpMaxRiskColor,9,false);
+   MakeLabel("RES_MIN",26,328," ",InpMinRiskColor,9,false);
+   MakeLabel("RES_MED",26,346," ",InpMedRiskColor,9,false);
+   MakeLabel("RES_MAX",26,364," ",InpMaxRiskColor,9,false);
    MakeLabel("RES_NOTE",26,382,"Pick a pair above to begin.",InpTextColor,8,false);
 }
 
@@ -339,9 +339,9 @@ void DoCalculate()
    if(symbol=="" || !SymbolSelect(symbol,true))
    {
       SetLabelText("SEL_NOTE","⚠ Could not find a broker symbol for "+g_aliasLabels[g_selectedIndex]+".",InpErrorColor);
-      SetLabelText("RES_MIN","",InpMinRiskColor);
-      SetLabelText("RES_MED","",InpMedRiskColor);
-      SetLabelText("RES_MAX","",InpMaxRiskColor);
+      SetLabelText("RES_MIN"," ",InpMinRiskColor);
+      SetLabelText("RES_MED"," ",InpMedRiskColor);
+      SetLabelText("RES_MAX"," ",InpMaxRiskColor);
       SetLabelText("RES_NOTE","Add it to Market Watch manually and try again.",InpErrorColor);
       ChartRedraw(0);
       return;
@@ -354,9 +354,9 @@ void DoCalculate()
 
    if(capital<=0.0 || slPoints<=0.0)
    {
-      SetLabelText("RES_MIN","",InpMinRiskColor);
-      SetLabelText("RES_MED","",InpMedRiskColor);
-      SetLabelText("RES_MAX","",InpMaxRiskColor);
+      SetLabelText("RES_MIN"," ",InpMinRiskColor);
+      SetLabelText("RES_MED"," ",InpMedRiskColor);
+      SetLabelText("RES_MAX"," ",InpMaxRiskColor);
       SetLabelText("RES_NOTE","⚠ Capital and SL Distance must both be greater than 0.",InpErrorColor);
       ChartRedraw(0);
       return;

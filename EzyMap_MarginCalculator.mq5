@@ -211,11 +211,11 @@ void BuildGUI()
    MakeButton("BTN_CALC",26,196,280,28,"CALCULATE",InpButtonColor,InpButtonTextColor,10);
 
    MakeLabel("RES_HEAD",26,234,"RESULTS",InpTextColor,9,true);
-   MakeLabel("RES_LEV",26,250,"",InpTextColor,8,false);
-   MakeLabel("RES_MARGIN",26,266,"",InpAccentColor,9,false);
-   MakeLabel("RES_CONS",26,284,"",InpConsColor,9,false);
-   MakeLabel("RES_MOD",26,302,"",InpModColor,9,false);
-   MakeLabel("RES_AGG",26,320,"",InpAggColor,9,false);
+   MakeLabel("RES_LEV",26,250," ",InpTextColor,8,false);
+   MakeLabel("RES_MARGIN",26,266," ",InpAccentColor,9,false);
+   MakeLabel("RES_CONS",26,284," ",InpConsColor,9,false);
+   MakeLabel("RES_MOD",26,302," ",InpModColor,9,false);
+   MakeLabel("RES_AGG",26,320," ",InpAggColor,9,false);
    MakeLabel("RES_NOTE",26,338,"Pick a pair above to begin.",InpTextColor,8,false);
 }
 
@@ -375,22 +375,43 @@ void DoCalculate()
       return;
    }
 
-   double price=SymbolInfoDouble(symbol,SYMBOL_ASK);
+   // Prefer a fresh tick over the cached SYMBOL_ASK value - right after
+   // SymbolSelect() the cached price can still be stale/zero for a symbol
+   // that wasn't already on the current chart.
+   MqlTick tick;
+   double price=0.0;
+   if(SymbolInfoTick(symbol,tick) && tick.ask>0.0)
+      price=tick.ask;
+   else
+      price=SymbolInfoDouble(symbol,SYMBOL_ASK);
+
    double volMin=SymbolInfoDouble(symbol,SYMBOL_VOLUME_MIN);
    double volMax=SymbolInfoDouble(symbol,SYMBOL_VOLUME_MAX);
    double volStep=SymbolInfoDouble(symbol,SYMBOL_VOLUME_STEP);
 
    if(price<=0.0 || volStep<=0.0)
    {
+      SetLabelText("RES_LEV"," ",InpTextColor);
+      SetLabelText("RES_MARGIN"," ",InpAccentColor);
+      SetLabelText("RES_CONS"," ",InpConsColor);
+      SetLabelText("RES_MOD"," ",InpModColor);
+      SetLabelText("RES_AGG"," ",InpAggColor);
       SetLabelText("RES_NOTE","⚠ Trade specification unavailable for "+symbol+" - try again shortly.",InpErrorColor);
       ChartRedraw(0);
       return;
    }
 
+   ResetLastError();
    double marginPerLot=0.0;
    if(!OrderCalcMargin(ORDER_TYPE_BUY,symbol,1.0,price,marginPerLot) || marginPerLot<=0.0)
    {
-      SetLabelText("RES_NOTE","⚠ Could not compute margin for "+symbol+" (check Market Watch / trade permissions).",InpErrorColor);
+      int err=GetLastError();
+      SetLabelText("RES_LEV"," ",InpTextColor);
+      SetLabelText("RES_MARGIN"," ",InpAccentColor);
+      SetLabelText("RES_CONS"," ",InpConsColor);
+      SetLabelText("RES_MOD"," ",InpModColor);
+      SetLabelText("RES_AGG"," ",InpAggColor);
+      SetLabelText("RES_NOTE","⚠ Could not compute margin for "+symbol+" (error #"+IntegerToString(err)+"). Check Market Watch / symbol permissions.",InpErrorColor);
       ChartRedraw(0);
       return;
    }
