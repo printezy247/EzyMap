@@ -270,7 +270,44 @@ void CandidatesFor(string alias,string &out[])
    else                     { string a[]={alias}; ArrayCopy(out,a); }
 }
 
-string ResolveSymbol(string alias)
+// Scans 'inMarketWatchOnly' true = only symbols the user already has
+// watched (SymbolsTotal(true)) - these are guaranteed synced/tradeable.
+// false = the broker's entire symbol universe (thousands of entries,
+// many inactive/unsynced duplicates), used only as a last-resort fallback.
+string ScanSymbols(string &upperCandidates[],bool inMarketWatchOnly)
+{
+   int total=SymbolsTotal(inMarketWatchOnly);
+
+   for(int i=0;i<total;i++)
+   {
+      string name=SymbolName(i,inMarketWatchOnly);
+      string upperName=name; StringToUpper(upperName);
+      for(int c=0;c<ArraySize(upperCandidates);c++)
+         if(upperName==upperCandidates[c]) return name;
+   }
+   for(int i=0;i<total;i++)
+   {
+      string name=SymbolName(i,inMarketWatchOnly);
+      string upperName=name; StringToUpper(upperName);
+      for(int c=0;c<ArraySize(upperCandidates);c++)
+         if(StringFind(upperName,upperCandidates[c])==0) return name;
+   }
+   for(int i=0;i<total;i++)
+   {
+      string name=SymbolName(i,inMarketWatchOnly);
+      string upperName=name; StringToUpper(upperName);
+      for(int c=0;c<ArraySize(upperCandidates);c++)
+         if(StringFind(upperName,upperCandidates[c])>=0) return name;
+   }
+   return "";
+}
+
+// Prefer whatever the user already has in Market Watch - it's guaranteed
+// selected, synced and tradeable there, unlike a fresh match pulled from
+// the broker's full symbol universe (which can land on an unsynced or
+// otherwise unusable duplicate, e.g. a swap-free/ECN variant of the same
+// pair that OrderCalcMargin then fails on).
+string ResolveSymbol(string alias,bool &wasAlreadyWatched)
 {
    string candidates[];
    CandidatesFor(alias,candidates);
@@ -284,30 +321,30 @@ string ResolveSymbol(string alias)
       upperCandidates[c]=u;
    }
 
-   int total=SymbolsTotal(false);
+   string found=ScanSymbols(upperCandidates,true);
+   if(found!="")
+   {
+      wasAlreadyWatched=true;
+      return found;
+   }
 
-   for(int i=0;i<total;i++)
+   wasAlreadyWatched=false;
+   return ScanSymbols(upperCandidates,false);
+}
+
+// After adding a symbol that wasn't already in Market Watch, give the
+// terminal a brief moment to sync its trade specification/price before
+// margin math relies on it - avoids OrderCalcMargin failing on a symbol
+// that was only just selected.
+bool WaitForSymbolReady(string symbol)
+{
+   for(int i=0;i<10;i++)
    {
-      string name=SymbolName(i,false);
-      string upperName=name; StringToUpper(upperName);
-      for(int c=0;c<ArraySize(upperCandidates);c++)
-         if(upperName==upperCandidates[c]) return name;
+      if(SymbolInfoDouble(symbol,SYMBOL_BID)>0.0 && SymbolInfoDouble(symbol,SYMBOL_ASK)>0.0)
+         return true;
+      Sleep(100);
    }
-   for(int i=0;i<total;i++)
-   {
-      string name=SymbolName(i,false);
-      string upperName=name; StringToUpper(upperName);
-      for(int c=0;c<ArraySize(upperCandidates);c++)
-         if(StringFind(upperName,upperCandidates[c])==0) return name;
-   }
-   for(int i=0;i<total;i++)
-   {
-      string name=SymbolName(i,false);
-      string upperName=name; StringToUpper(upperName);
-      for(int c=0;c<ArraySize(upperCandidates);c++)
-         if(StringFind(upperName,upperCandidates[c])>=0) return name;
-   }
-   return "";
+   return false;
 }
 
 //----------------------------- Calculation ---------------------------
@@ -357,11 +394,19 @@ void DoCalculate()
    }
 
    string alias=g_aliasKeys[g_selectedIndex];
-   string symbol=ResolveSymbol(alias);
+   bool wasAlreadyWatched=false;
+   string symbol=ResolveSymbol(alias,wasAlreadyWatched);
    if(symbol=="" || !SymbolSelect(symbol,true))
    {
       SetLabelText("SEL_NOTE","⚠ Could not find a broker symbol for "+g_aliasLabels[g_selectedIndex]+".",InpErrorColor);
       SetLabelText("RES_NOTE","Add it to Market Watch manually and try again.",InpErrorColor);
+      ChartRedraw(0);
+      return;
+   }
+   if(!wasAlreadyWatched && !WaitForSymbolReady(symbol))
+   {
+      SetLabelText("SEL_NOTE","Selected: "+g_aliasLabels[g_selectedIndex]+"  →  broker symbol: "+symbol,InpAccentColor);
+      SetLabelText("RES_NOTE","⚠ "+symbol+" was just added to Market Watch and hasn't synced yet - click CALCULATE again in a moment.",InpErrorColor);
       ChartRedraw(0);
       return;
    }
