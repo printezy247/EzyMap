@@ -3,11 +3,18 @@
 //| On-chart GUI: pick a pair, type Capital/Free Margin, click        |
 //| CALCULATE - get margin per lot and Conservative/Moderate/         |
 //| Aggressive max lot sizes.                                         |
+//|                                                                    |
+//| Built as an EXPERT ADVISOR, not an indicator: OrderCalcMargin() is |
+//| a trade-context function that MT5 does not allow indicators to    |
+//| call (fails with error #4014 regardless of symbol/timing) - only  |
+//| EAs and Scripts can call it. An EA is required here to keep the   |
+//| persistent on-chart GUI (a Script can't stay open for buttons).   |
+//| It does not place any trades - only calls the read-only margin    |
+//| calculation function.                                             |
 //+------------------------------------------------------------------+
 #property copyright "EzyMap"
-#property version   "1.00"
-#property indicator_chart_window
-#property indicator_plots 0
+#property version   "2.00"
+#property strict
 
 input double InpConservativePercent = 30.0;   // Conservative tier (% of free margin used)
 input double InpModeratePercent     = 50.0;   // Moderate tier (% of free margin used)
@@ -490,7 +497,6 @@ void DoCalculate()
 //--------------------------- MT5 events -----------------------------
 int OnInit()
 {
-   IndicatorSetString(INDICATOR_SHORTNAME,PRODUCT_NAME);
    g_selectedIndex=-1;
    g_dropdownOpen=false;
    BuildGUI();
@@ -504,13 +510,18 @@ void OnDeinit(const int reason)
    ChartRedraw(0);
 }
 
+void OnTick()
+{
+   // No per-tick work needed - this EA only acts on button clicks.
+}
+
 void OnChartEvent(const int id,const long &lparam,const double &dparam,const string &sparam)
 {
    if(id==CHARTEVENT_OBJECT_CLICK)
    {
       if(sparam==PREFIX+"BTN_CLOSE")
       {
-         ChartIndicatorDelete(0,0,PRODUCT_NAME);
+         ExpertRemove();
          return;
       }
 
@@ -551,10 +562,5 @@ void OnChartEvent(const int id,const long &lparam,const double &dparam,const str
       DoCalculate();
       return;
    }
-}
-
-int OnCalculate(const int rates_total,const int prev_calculated,const datetime &time[],const double &open[],const double &high[],const double &low[],const double &close[],const long &tick_volume[],const long &volume[],const int &spread[])
-{
-   return rates_total;
 }
 //+------------------------------------------------------------------+
