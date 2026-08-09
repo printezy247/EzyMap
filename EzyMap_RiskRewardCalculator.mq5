@@ -33,7 +33,7 @@ string PREFIX="EZRR_";
 int PX=14;
 int PY=38;
 int PW=332;
-int PH=712;
+int PH=666;
 
 #define PAIR_COUNT 26
 string g_aliasKeys[PAIR_COUNT] =
@@ -183,6 +183,10 @@ void BuildGUI()
 {
    MakeRect("PANEL",PX,PY,PW,PH,InpPanelColor,InpPanelBorderColor,50);
 
+   // Small corner close button - re-open by double-clicking the indicator
+   // in Navigator, no need for it to take a full row.
+   MakeButton("BTN_CLOSE",PX+PW-38,PY+6,30,26,"✕",InpCloseBtnColor,InpCloseBtnTextColor,11);
+
    MakeLabel("TITLE",26,48,"EZYMAP RISK:REWARD & BREAKEVEN CALC",InpAccentColor,10,true);
    MakeLabel("SUB",26,68,"1) Direction+Pair  2) Prices/Lot  3) Calculate",InpTextColor,8,false);
 
@@ -219,8 +223,6 @@ void BuildGUI()
    MakeLabel("RES_BE",26,602,"",InpAccentColor,9,false);
    MakeLabel("RES_NET",26,620,"",InpTextColor,8,false);
    MakeLabel("RES_NOTE",26,638,"Pick Direction + Pair above to begin.",InpTextColor,8,false);
-
-   MakeButton("BTN_CLOSE",26,666,280,30,"✕  CLOSE CALCULATOR",InpCloseBtnColor,InpCloseBtnTextColor,9);
 
    RefreshDirButtons();
 }

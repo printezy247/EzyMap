@@ -38,7 +38,7 @@ string PREFIX="EZLOT_";
 int PX=14;   // panel x
 int PY=38;   // panel y
 int PW=332;  // panel width
-int PH=452;  // panel height (closed state)
+int PH=406;  // panel height (closed state)
 
 // Instrument list: friendly label -> alias key used to resolve the broker's
 // actual symbol name (handles suffixes like XAUUSD.sc, BTCUSD-ECN, etc).
@@ -199,6 +199,11 @@ void BuildGUI()
 {
    MakeRect("PANEL",PX,PY,PW,PH,InpPanelColor,InpPanelBorderColor,50);
 
+   // Small corner close button - tucked into the panel's top-right corner
+   // so it doesn't eat a full row of space. Re-open by double-clicking the
+   // indicator in Navigator.
+   MakeButton("BTN_CLOSE",PX+PW-38,PY+6,30,26,"✕",InpCloseBtnColor,InpCloseBtnTextColor,11);
+
    MakeLabel("TITLE",26,48,"EZYMAP LOT SIZE CALCULATOR",InpAccentColor,11,true);
    MakeLabel("SUB",26,68,"1) Pick a pair  2) Fill Capital & SL  3) Calculate",InpTextColor,8,false);
 
@@ -220,8 +225,6 @@ void BuildGUI()
    MakeLabel("RES_MED",26,346,"",InpMedRiskColor,9,false);
    MakeLabel("RES_MAX",26,364,"",InpMaxRiskColor,9,false);
    MakeLabel("RES_NOTE",26,382,"Pick a pair above to begin.",InpTextColor,8,false);
-
-   MakeButton("BTN_CLOSE",26,410,280,30,"✕  CLOSE CALCULATOR",InpCloseBtnColor,InpCloseBtnTextColor,9);
 }
 
 void ItemCoords(int idx,int &x,int &y)
