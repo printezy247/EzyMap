@@ -8,9 +8,9 @@
 #property indicator_chart_window
 #property indicator_plots 0
 
-input double InpMinRiskPercent = 1.0;    // Min risk tier (% of capital)
-input double InpMedRiskPercent = 20.0;   // Medium risk tier (% of capital)
-input double InpMaxRiskPercent = 50.0;   // Max risk tier (% of capital)
+input double InpMinRiskPercent = 0.5;    // Min risk tier (% of capital)
+input double InpMedRiskPercent = 10.0;   // Medium risk tier (% of capital)
+input double InpMaxRiskPercent = 25.0;   // Max risk tier (% of capital)
 
 input color  InpPanelColor       = C'7,10,14';
 input color  InpPanelBorderColor = C'56,65,76';
