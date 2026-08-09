@@ -148,15 +148,17 @@ void MakeButton(string suffix,int x,int y,int w,int h,string text,color bg,color
    SetCommon(n,zorder);
 }
 
+// Standard broker-adaptive pip detection: brokers that quote an extra
+// "fractional pip" digit (3 or 5 decimal places - e.g. gold at 2015.325,
+// EURUSD at 1.08123) use 1 pip = 10 x point; everything else (2 or 4
+// decimal places) uses 1 pip = 1 x point. This adapts correctly per
+// symbol/broker instead of guessing from the symbol name.
 double PipSize(string sym)
 {
-   string s=sym; StringToUpper(s);
-   bool isGold=(StringFind(s,"XAU")>=0 || StringFind(s,"GOLD")>=0);
-   bool isBTC =(StringFind(s,"BTC")>=0 || StringFind(s,"XBT")>=0);
+   int digits=(int)SymbolInfoInteger(sym,SYMBOL_DIGITS);
    double point=SymbolInfoDouble(sym,SYMBOL_POINT);
-   if(isGold) return MathMax(0.10,point);
-   if(isBTC)  return MathMax(1.0,point);
-   return point;
+   if(point<=0.0) return 0.0;
+   return (digits==3 || digits==5)?point*10.0:point;
 }
 
 //------------------------------ Build GUI ----------------------------
@@ -212,22 +214,46 @@ bool ApplyAutoSLTP(ulong ticket)
    double entry=PositionGetDouble(POSITION_PRICE_OPEN);
    double pip=PipSize(sym);
    int digits=(int)SymbolInfoInteger(sym,SYMBOL_DIGITS);
+   double point=SymbolInfoDouble(sym,SYMBOL_POINT);
 
    double tp,sl;
    if(type==POSITION_TYPE_BUY) { tp=entry+g_tpPips*pip; sl=entry-g_slPips*pip; }
    else                        { tp=entry-g_tpPips*pip; sl=entry+g_slPips*pip; }
+
+   // The broker enforces a minimum SL/TP distance from entry
+   // (SYMBOL_TRADE_STOPS_LEVEL, in points) - widen to meet it instead of
+   // letting PositionModify fail outright on a too-tight request.
+   long stopsLevelPts=(long)SymbolInfoInteger(sym,SYMBOL_TRADE_STOPS_LEVEL);
+   double minDistance=stopsLevelPts*point;
+   bool widened=false;
+
+   if(minDistance>0.0)
+   {
+      if(type==POSITION_TYPE_BUY)
+      {
+         if(entry-sl<minDistance) { sl=entry-minDistance; widened=true; }
+         if(tp-entry<minDistance) { tp=entry+minDistance; widened=true; }
+      }
+      else
+      {
+         if(sl-entry<minDistance) { sl=entry+minDistance; widened=true; }
+         if(entry-tp<minDistance) { tp=entry-minDistance; widened=true; }
+      }
+   }
+
    tp=NormalizeDouble(tp,digits);
    sl=NormalizeDouble(sl,digits);
 
    if(trade.PositionModify(ticket,sl,tp))
    {
       g_appliedCount++;
-      SetLabelText("NOTE","Set SL/TP on "+sym+" #"+IntegerToString((long)ticket)+"  SL "+DoubleToString(sl,digits)+"  TP "+DoubleToString(tp,digits),InpAccentColor);
+      string widenNote=widened?("  (widened to broker min "+IntegerToString(stopsLevelPts)+" pts)"):"";
+      SetLabelText("NOTE","Set SL/TP on "+sym+" #"+IntegerToString((long)ticket)+"  SL "+DoubleToString(sl,digits)+"  TP "+DoubleToString(tp,digits)+widenNote,InpAccentColor);
       RefreshStatusLabels();
       return true;
    }
 
-   SetLabelText("NOTE","⚠ Failed on "+sym+" #"+IntegerToString((long)ticket)+" - "+trade.ResultRetcodeDescription(),InpErrorColor);
+   SetLabelText("NOTE","⚠ Failed on "+sym+" #"+IntegerToString((long)ticket)+" - "+trade.ResultRetcodeDescription()+" (broker min distance: "+IntegerToString(stopsLevelPts)+" pts)",InpErrorColor);
    return false;
 }
 
