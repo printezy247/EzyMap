@@ -1,16 +1,16 @@
 //+------------------------------------------------------------------+
 //| EzyMap Lot Size Calculator                                        |
-//| On-chart GUI: pick a pair from the buttons, type Capital and SL   |
+//| On-chart GUI: pick a pair from the dropdown, type Capital and SL  |
 //| Distance (points), click CALCULATE - get Min/Med/Max risk lots.  |
 //+------------------------------------------------------------------+
 #property copyright "EzyMap"
-#property version   "3.00"
+#property version   "4.00"
 #property indicator_chart_window
 #property indicator_plots 0
 
-input double InpMinRiskPercent = 0.5;   // Min risk tier (% of capital)
-input double InpMedRiskPercent = 1.0;   // Medium risk tier (% of capital)
-input double InpMaxRiskPercent = 2.0;   // Max risk tier (% of capital)
+input double InpMinRiskPercent = 1.0;    // Min risk tier (% of capital)
+input double InpMedRiskPercent = 20.0;   // Medium risk tier (% of capital)
+input double InpMaxRiskPercent = 50.0;   // Max risk tier (% of capital)
 
 input color  InpPanelColor       = C'7,10,14';
 input color  InpPanelBorderColor = C'56,65,76';
@@ -29,6 +29,8 @@ input color  InpMinRiskColor     = C'52,211,176';
 input color  InpMedRiskColor     = C'237,185,58';
 input color  InpMaxRiskColor     = C'235,72,96';
 input color  InpErrorColor       = C'235,72,96';
+input color  InpCloseBtnColor    = C'40,14,18';
+input color  InpCloseBtnTextColor= C'235,72,96';
 
 #define PRODUCT_NAME "EzyMap Lot Size Calculator"
 string PREFIX="EZLOT_";
@@ -36,43 +38,65 @@ string PREFIX="EZLOT_";
 int PX=14;   // panel x
 int PY=38;   // panel y
 int PW=332;  // panel width
-int PH=500;  // panel height
+int PH=452;  // panel height (closed state)
 
-// Instrument picker: friendly label -> alias key used to resolve the
-// broker's actual symbol name (handles suffixes like XAUUSD.sc, BTCUSD-ECN, etc).
-string g_aliasKeys[11]   = {"GBPUSD","EURUSD","USDJPY","USDCAD","AUDUSD","USDCHF","XAUUSD","XAGUSD","OIL","US30","BTCUSD"};
-string g_aliasLabels[11] = {"GBP/USD","EUR/USD","USD/JPY","USD/CAD","AUD/USD","USD/CHF","XAU/USD","XAG/USD","OIL","US30","BTC/USD"};
+// Instrument list: friendly label -> alias key used to resolve the broker's
+// actual symbol name (handles suffixes like XAUUSD.sc, BTCUSD-ECN, etc).
+// Forex = every pair combination across USD/GBP/EUR/JPY/AUD/CAD/CHF (21),
+// plus Gold, Silver, Oil, US30 and BTCUSD (5) = 26 total.
+#define PAIR_COUNT 26
+string g_aliasKeys[PAIR_COUNT] =
+{
+   "EURUSD","GBPUSD","USDJPY","USDCHF","AUDUSD","USDCAD",
+   "EURGBP","EURJPY","EURCHF","EURAUD","EURCAD",
+   "GBPJPY","GBPCHF","GBPAUD","GBPCAD",
+   "AUDJPY","AUDCHF","AUDCAD",
+   "CADJPY","CADCHF","CHFJPY",
+   "XAUUSD","XAGUSD","OIL","US30","BTCUSD"
+};
+string g_aliasLabels[PAIR_COUNT] =
+{
+   "EUR/USD","GBP/USD","USD/JPY","USD/CHF","AUD/USD","USD/CAD",
+   "EUR/GBP","EUR/JPY","EUR/CHF","EUR/AUD","EUR/CAD",
+   "GBP/JPY","GBP/CHF","GBP/AUD","GBP/CAD",
+   "AUD/JPY","AUD/CHF","AUD/CAD",
+   "CAD/JPY","CAD/CHF","CHF/JPY",
+   "XAU/USD","XAG/USD","OIL","US30","BTC/USD"
+};
 int g_selectedIndex=-1;
+bool g_dropdownOpen=false;
 
 //----------------------------- Helpers ------------------------------
-void SetCommon(string n,bool selectable)
+void SetCommon(string n,int zorder=100)
 {
    ObjectSetInteger(0,n,OBJPROP_CORNER,CORNER_LEFT_UPPER);
-   ObjectSetInteger(0,n,OBJPROP_SELECTABLE,selectable);
+   ObjectSetInteger(0,n,OBJPROP_SELECTABLE,false);
    ObjectSetInteger(0,n,OBJPROP_SELECTED,false);
    ObjectSetInteger(0,n,OBJPROP_HIDDEN,false);
    ObjectSetInteger(0,n,OBJPROP_BACK,false);
    ObjectSetInteger(0,n,OBJPROP_TIMEFRAMES,OBJ_ALL_PERIODS);
-   ObjectSetInteger(0,n,OBJPROP_ZORDER,100);
+   ObjectSetInteger(0,n,OBJPROP_ZORDER,zorder);
 }
 
-void MakePanel()
+void DeleteObj(string suffix) { ObjectDelete(0,PREFIX+suffix); }
+
+void MakeRect(string suffix,int x,int y,int w,int h,color bg,color border,int zorder=100)
 {
-   string n=PREFIX+"PANEL";
+   string n=PREFIX+suffix;
    if(ObjectFind(0,n)<0) ObjectCreate(0,n,OBJ_RECTANGLE_LABEL,0,0,0);
-   ObjectSetInteger(0,n,OBJPROP_XDISTANCE,PX);
-   ObjectSetInteger(0,n,OBJPROP_YDISTANCE,PY);
-   ObjectSetInteger(0,n,OBJPROP_XSIZE,PW);
-   ObjectSetInteger(0,n,OBJPROP_YSIZE,PH);
-   ObjectSetInteger(0,n,OBJPROP_BGCOLOR,InpPanelColor);
-   ObjectSetInteger(0,n,OBJPROP_BORDER_COLOR,InpPanelBorderColor);
-   ObjectSetInteger(0,n,OBJPROP_COLOR,InpPanelBorderColor);
+   ObjectSetInteger(0,n,OBJPROP_XDISTANCE,x);
+   ObjectSetInteger(0,n,OBJPROP_YDISTANCE,y);
+   ObjectSetInteger(0,n,OBJPROP_XSIZE,w);
+   ObjectSetInteger(0,n,OBJPROP_YSIZE,h);
+   ObjectSetInteger(0,n,OBJPROP_BGCOLOR,bg);
+   ObjectSetInteger(0,n,OBJPROP_BORDER_COLOR,border);
+   ObjectSetInteger(0,n,OBJPROP_COLOR,border);
    ObjectSetInteger(0,n,OBJPROP_STYLE,STYLE_SOLID);
    ObjectSetInteger(0,n,OBJPROP_WIDTH,1);
-   SetCommon(n,false);
+   SetCommon(n,zorder);
 }
 
-void MakeLabel(string suffix,int x,int y,string text,color clr,int size=9,bool bold=false)
+void MakeLabel(string suffix,int x,int y,string text,color clr,int size=9,bool bold=false,int zorder=100)
 {
    string n=PREFIX+suffix;
    if(ObjectFind(0,n)<0) ObjectCreate(0,n,OBJ_LABEL,0,0,0);
@@ -82,7 +106,7 @@ void MakeLabel(string suffix,int x,int y,string text,color clr,int size=9,bool b
    ObjectSetInteger(0,n,OBJPROP_FONTSIZE,size);
    ObjectSetString(0,n,OBJPROP_FONT,bold?"Arial Bold":"Arial");
    ObjectSetString(0,n,OBJPROP_TEXT,text);
-   SetCommon(n,false);
+   SetCommon(n,zorder);
 }
 
 void SetLabelText(string suffix,string text,color clr)
@@ -95,8 +119,8 @@ void SetLabelText(string suffix,string text,color clr)
 
 // NOTE: SELECTABLE must be FALSE on edit/button objects. If it is TRUE,
 // the first click just "selects" the object (drag handles) instead of
-// focusing it for typing/clicking - this was the root cause of the
-// "can't type a value" issue.
+// focusing it for typing/clicking - this was the root cause of an
+// earlier "can't type a value" bug.
 void MakeEdit(string suffix,int x,int y,int w,int h,string defaultText)
 {
    string n=PREFIX+suffix;
@@ -116,10 +140,10 @@ void MakeEdit(string suffix,int x,int y,int w,int h,string defaultText)
    ObjectSetString(0,n,OBJPROP_FONT,"Arial");
    ObjectSetInteger(0,n,OBJPROP_ALIGN,ALIGN_CENTER);
    ObjectSetInteger(0,n,OBJPROP_READONLY,false);
-   SetCommon(n,false);
+   SetCommon(n,100);
 }
 
-void MakeButton(string suffix,int x,int y,int w,int h,string text,color bg,color txt,int size=10)
+void MakeButton(string suffix,int x,int y,int w,int h,string text,color bg,color txt,int size=10,int zorder=100)
 {
    string n=PREFIX+suffix;
    if(ObjectFind(0,n)<0) ObjectCreate(0,n,OBJ_BUTTON,0,0,0);
@@ -134,7 +158,7 @@ void MakeButton(string suffix,int x,int y,int w,int h,string text,color bg,color
    ObjectSetString(0,n,OBJPROP_FONT,"Arial Bold");
    ObjectSetString(0,n,OBJPROP_TEXT,text);
    ObjectSetInteger(0,n,OBJPROP_STATE,false);
-   SetCommon(n,false);
+   SetCommon(n,zorder);
 }
 
 string GetEditText(string suffix)
@@ -157,54 +181,87 @@ int VolumeDecimals(double step)
    return 2;
 }
 
-//------------------------------ Build GUI ----------------------------
-void SymBtnCoords(int idx,int &x,int &y)
-{
-   int col=idx%3, row=idx/3;
-   int colW=88, gap=8, startX=26, startY=108, rowH=32;
-   x=startX+col*(colW+gap);
-   y=startY+row*rowH;
-}
+//------------------------------ Layout -------------------------------
+#define HEAD_X 26
+#define HEAD_Y 106
+#define HEAD_W 280
+#define HEAD_H 28
 
+#define DD_COLS 2
+#define DD_ITEM_W 136
+#define DD_ITEM_H 22
+#define DD_GAP 8
+#define DD_X (HEAD_X)
+#define DD_Y (HEAD_Y+HEAD_H+4)
+
+//------------------------------ Build GUI ----------------------------
 void BuildGUI()
 {
-   MakePanel();
+   MakeRect("PANEL",PX,PY,PW,PH,InpPanelColor,InpPanelBorderColor,50);
 
    MakeLabel("TITLE",26,48,"EZYMAP LOT SIZE CALCULATOR",InpAccentColor,11,true);
-   MakeLabel("SUB",26,68,"1) Pick a pair   2) Fill Capital & SL   3) Calculate",InpTextColor,8,false);
+   MakeLabel("SUB",26,68,"1) Pick a pair  2) Fill Capital & SL  3) Calculate",InpTextColor,8,false);
 
-   MakeLabel("LBL_PAIR",26,90,"SELECT PAIR",InpTextColor,8,false);
-   for(int i=0;i<11;i++)
-   {
-      int x,y; SymBtnCoords(i,x,y);
-      MakeButton("BTN_SYM_"+IntegerToString(i),x,y,88,26,g_aliasLabels[i],InpSymBtnColor,InpSymBtnTextColor,8);
-   }
-   MakeLabel("SEL_NOTE",26,244,"No pair selected yet.",InpTextColor,8,false);
+   MakeLabel("LBL_PAIR",HEAD_X,90,"SELECT PAIR",InpTextColor,8,false);
+   MakeButton("BTN_HEAD",HEAD_X,HEAD_Y,HEAD_W,HEAD_H,"TAP TO SELECT PAIR   ▾",InpEditBgColor,InpTextColor,9);
 
-   MakeLabel("LBL_CAP",26,268,"CAPITAL / BALANCE ($)",InpTextColor,8,false);
-   MakeEdit("EDIT_CAPITAL",26,284,280,26,DoubleToString(AccountInfoDouble(ACCOUNT_BALANCE),2));
+   MakeLabel("SEL_NOTE",26,142,"No pair selected yet.",InpTextColor,8,false);
 
-   MakeLabel("LBL_SL",26,318,"STOP LOSS DISTANCE (POINTS)",InpTextColor,8,false);
-   MakeEdit("EDIT_SL",26,334,280,26,"200");
+   MakeLabel("LBL_CAP",26,166,"CAPITAL / BALANCE ($)",InpTextColor,8,false);
+   MakeEdit("EDIT_CAPITAL",26,182,280,26,DoubleToString(AccountInfoDouble(ACCOUNT_BALANCE),2));
 
-   MakeButton("BTN_CALC",26,368,280,32,"CALCULATE LOT SIZE",InpButtonColor,InpButtonTextColor,10);
+   MakeLabel("LBL_SL",26,216,"STOP LOSS DISTANCE (POINTS)",InpTextColor,8,false);
+   MakeEdit("EDIT_SL",26,232,280,26,"200");
 
-   MakeLabel("RES_HEAD",26,412,"RESULTS",InpTextColor,9,true);
-   MakeLabel("RES_MIN",26,430,"",InpMinRiskColor,9,false);
-   MakeLabel("RES_MED",26,448,"",InpMedRiskColor,9,false);
-   MakeLabel("RES_MAX",26,466,"",InpMaxRiskColor,9,false);
-   MakeLabel("RES_NOTE",26,484,"Pick a pair above to begin.",InpTextColor,8,false);
+   MakeButton("BTN_CALC",26,266,280,32,"CALCULATE LOT SIZE",InpButtonColor,InpButtonTextColor,10);
+
+   MakeLabel("RES_HEAD",26,310,"RESULTS",InpTextColor,9,true);
+   MakeLabel("RES_MIN",26,328,"",InpMinRiskColor,9,false);
+   MakeLabel("RES_MED",26,346,"",InpMedRiskColor,9,false);
+   MakeLabel("RES_MAX",26,364,"",InpMaxRiskColor,9,false);
+   MakeLabel("RES_NOTE",26,382,"Pick a pair above to begin.",InpTextColor,8,false);
+
+   MakeButton("BTN_CLOSE",26,410,280,30,"✕  CLOSE CALCULATOR",InpCloseBtnColor,InpCloseBtnTextColor,9);
 }
 
-void RefreshSymButtons()
+void ItemCoords(int idx,int &x,int &y)
 {
-   for(int i=0;i<11;i++)
+   int col=idx%DD_COLS, row=idx/DD_COLS;
+   x=DD_X+col*(DD_ITEM_W+DD_GAP);
+   y=DD_Y+row*(DD_ITEM_H+2);
+}
+
+int DropdownRows() { return (PAIR_COUNT+DD_COLS-1)/DD_COLS; }
+
+void OpenDropdown()
+{
+   int rows=DropdownRows();
+   int bgH=rows*(DD_ITEM_H+2)+8;
+   MakeRect("DD_BG",DD_X-6,DD_Y-4,DD_ITEM_W*DD_COLS+DD_GAP+12,bgH,InpPanelColor,InpAccentColor,200);
+
+   for(int i=0;i<PAIR_COUNT;i++)
    {
-      string n=PREFIX+"BTN_SYM_"+IntegerToString(i);
+      int x,y; ItemCoords(i,x,y);
       bool sel=(i==g_selectedIndex);
-      ObjectSetInteger(0,n,OBJPROP_BGCOLOR,sel?InpSymBtnSelColor:InpSymBtnColor);
-      ObjectSetInteger(0,n,OBJPROP_COLOR,sel?InpSymBtnSelText:InpSymBtnTextColor);
+      MakeButton("DD_ITEM_"+IntegerToString(i),x,y,DD_ITEM_W,DD_ITEM_H,g_aliasLabels[i],
+                 sel?InpSymBtnSelColor:InpSymBtnColor, sel?InpSymBtnSelText:InpSymBtnTextColor,8,210);
    }
+
+   ObjectSetString(0,PREFIX+"BTN_HEAD",OBJPROP_TEXT,"TAP TO SELECT PAIR   ▴");
+   g_dropdownOpen=true;
+   ChartRedraw(0);
+}
+
+void CloseDropdown()
+{
+   DeleteObj("DD_BG");
+   for(int i=0;i<PAIR_COUNT;i++)
+      DeleteObj("DD_ITEM_"+IntegerToString(i));
+
+   string headText=(g_selectedIndex>=0)?g_aliasLabels[g_selectedIndex]+"   ▾":"TAP TO SELECT PAIR   ▾";
+   ObjectSetString(0,PREFIX+"BTN_HEAD",OBJPROP_TEXT,headText);
+   g_dropdownOpen=false;
+   ChartRedraw(0);
 }
 
 //------------------------- Symbol resolution -------------------------
@@ -268,7 +325,7 @@ void DoCalculate()
 {
    if(g_selectedIndex<0)
    {
-      SetLabelText("RES_NOTE","⚠ Please select a pair from the buttons above first.",InpErrorColor);
+      SetLabelText("RES_NOTE","⚠ Please select a pair from the dropdown above first.",InpErrorColor);
       ChartRedraw(0);
       return;
    }
@@ -364,8 +421,9 @@ string BuildTierText(string label,double riskPercent,double capital,double money
 int OnInit()
 {
    IndicatorSetString(INDICATOR_SHORTNAME,PRODUCT_NAME);
+   g_selectedIndex=-1;
+   g_dropdownOpen=false;
    BuildGUI();
-   RefreshSymButtons();
    ChartRedraw(0);
    return INIT_SUCCEEDED;
 }
@@ -380,23 +438,40 @@ void OnChartEvent(const int id,const long &lparam,const double &dparam,const str
 {
    if(id==CHARTEVENT_OBJECT_CLICK)
    {
+      if(sparam==PREFIX+"BTN_CLOSE")
+      {
+         ChartIndicatorDelete(0,0,PRODUCT_NAME);
+         return;
+      }
+
+      if(sparam==PREFIX+"BTN_HEAD")
+      {
+         ObjectSetInteger(0,sparam,OBJPROP_STATE,false);
+         if(g_dropdownOpen) CloseDropdown(); else OpenDropdown();
+         return;
+      }
+
       if(sparam==PREFIX+"BTN_CALC")
       {
          ObjectSetInteger(0,sparam,OBJPROP_STATE,false);
+         if(g_dropdownOpen) CloseDropdown();
          DoCalculate();
          return;
       }
 
-      for(int i=0;i<11;i++)
+      if(g_dropdownOpen)
       {
-         string n=PREFIX+"BTN_SYM_"+IntegerToString(i);
-         if(sparam==n)
+         for(int i=0;i<PAIR_COUNT;i++)
          {
-            ObjectSetInteger(0,n,OBJPROP_STATE,false);
-            g_selectedIndex=i;
-            RefreshSymButtons();
-            DoCalculate();
-            return;
+            string n=PREFIX+"DD_ITEM_"+IntegerToString(i);
+            if(sparam==n)
+            {
+               ObjectSetInteger(0,n,OBJPROP_STATE,false);
+               g_selectedIndex=i;
+               CloseDropdown();
+               DoCalculate();
+               return;
+            }
          }
       }
    }
