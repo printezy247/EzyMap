@@ -148,16 +148,22 @@ void MakeButton(string suffix,int x,int y,int w,int h,string text,color bg,color
    SetCommon(n,zorder);
 }
 
-// Standard broker-adaptive pip detection: brokers that quote an extra
-// "fractional pip" digit (3 or 5 decimal places - e.g. gold at 2015.325,
-// EURUSD at 1.08123) use 1 pip = 10 x point; everything else (2 or 4
-// decimal places) uses 1 pip = 1 x point. This adapts correctly per
-// symbol/broker instead of guessing from the symbol name.
+// Crypto doesn't follow the forex "fractional pip" convention at all, so
+// it gets its own fixed rule (1 pip = $1, the common crypto-CFD
+// convention) regardless of decimal digits. Everything else uses the
+// standard broker-adaptive rule: symbols quoting an extra fractional-pip
+// digit (3 or 5 decimals - e.g. gold at 2015.325, EURUSD at 1.08123) use
+// 1 pip = 10 x point; otherwise 1 pip = 1 x point.
 double PipSize(string sym)
 {
-   int digits=(int)SymbolInfoInteger(sym,SYMBOL_DIGITS);
    double point=SymbolInfoDouble(sym,SYMBOL_POINT);
    if(point<=0.0) return 0.0;
+
+   string s=sym; StringToUpper(s);
+   bool isCrypto=(StringFind(s,"BTC")>=0 || StringFind(s,"ETH")>=0 || StringFind(s,"XBT")>=0 || StringFind(s,"LTC")>=0 || StringFind(s,"XRP")>=0);
+   if(isCrypto) return MathMax(1.0,point);
+
+   int digits=(int)SymbolInfoInteger(sym,SYMBOL_DIGITS);
    return (digits==3 || digits==5)?point*10.0:point;
 }
 
@@ -214,46 +220,29 @@ bool ApplyAutoSLTP(ulong ticket)
    double entry=PositionGetDouble(POSITION_PRICE_OPEN);
    double pip=PipSize(sym);
    int digits=(int)SymbolInfoInteger(sym,SYMBOL_DIGITS);
-   double point=SymbolInfoDouble(sym,SYMBOL_POINT);
 
    double tp,sl;
    if(type==POSITION_TYPE_BUY) { tp=entry+g_tpPips*pip; sl=entry-g_slPips*pip; }
    else                        { tp=entry-g_tpPips*pip; sl=entry+g_slPips*pip; }
-
-   // The broker enforces a minimum SL/TP distance from entry
-   // (SYMBOL_TRADE_STOPS_LEVEL, in points) - widen to meet it instead of
-   // letting PositionModify fail outright on a too-tight request.
-   long stopsLevelPts=(long)SymbolInfoInteger(sym,SYMBOL_TRADE_STOPS_LEVEL);
-   double minDistance=stopsLevelPts*point;
-   bool widened=false;
-
-   if(minDistance>0.0)
-   {
-      if(type==POSITION_TYPE_BUY)
-      {
-         if(entry-sl<minDistance) { sl=entry-minDistance; widened=true; }
-         if(tp-entry<minDistance) { tp=entry+minDistance; widened=true; }
-      }
-      else
-      {
-         if(sl-entry<minDistance) { sl=entry+minDistance; widened=true; }
-         if(entry-tp<minDistance) { tp=entry-minDistance; widened=true; }
-      }
-   }
-
    tp=NormalizeDouble(tp,digits);
    sl=NormalizeDouble(sl,digits);
 
    if(trade.PositionModify(ticket,sl,tp))
    {
       g_appliedCount++;
-      string widenNote=widened?("  (widened to broker min "+IntegerToString(stopsLevelPts)+" pts)"):"";
-      SetLabelText("NOTE","Set SL/TP on "+sym+" #"+IntegerToString((long)ticket)+"  SL "+DoubleToString(sl,digits)+"  TP "+DoubleToString(tp,digits)+widenNote,InpAccentColor);
+      SetLabelText("NOTE","Set SL/TP on "+sym+" #"+IntegerToString((long)ticket)+"  SL "+DoubleToString(sl,digits)+"  TP "+DoubleToString(tp,digits),InpAccentColor);
       RefreshStatusLabels();
       return true;
    }
 
-   SetLabelText("NOTE","⚠ Failed on "+sym+" #"+IntegerToString((long)ticket)+" - "+trade.ResultRetcodeDescription()+" (broker min distance: "+IntegerToString(stopsLevelPts)+" pts)",InpErrorColor);
+   // Use the exact configured pips, no auto-adjustment - just report the
+   // broker's real minimum stop distance (converted to the same pip
+   // units) so it's clear whether that's actually the blocker.
+   double point=SymbolInfoDouble(sym,SYMBOL_POINT);
+   long stopsLevelPts=(long)SymbolInfoInteger(sym,SYMBOL_TRADE_STOPS_LEVEL);
+   double stopsLevelPips=(pip>0.0)?(stopsLevelPts*point)/pip:0.0;
+   SetLabelText("NOTE","⚠ Failed on "+sym+" #"+IntegerToString((long)ticket)+" - "+trade.ResultRetcodeDescription()+
+                "  (broker minimum: "+DoubleToString(stopsLevelPips,1)+" pips)",InpErrorColor);
    return false;
 }
 
