@@ -1,57 +1,43 @@
 //+------------------------------------------------------------------+
 //| EzyMap Lot Size Calculator                                        |
-//| Risk-based position sizing script. Computes a broker-safe lot     |
-//| size from account risk (percent or fixed money) and a SL price.  |
+//| On-chart GUI: type Pair, Capital, SL Distance (points), click     |
+//| CALCULATE, get Min / Medium / Max risk lot size options.          |
 //+------------------------------------------------------------------+
 #property copyright "EzyMap"
-#property version   "1.00"
-#property script_show_inputs
-#property strict
+#property version   "2.00"
+#property indicator_chart_window
+#property indicator_plots 0
 
-enum ELC_Direction
-{
-   ELC_BUY  = 0,
-   ELC_SELL = 1
-};
+input double InpMinRiskPercent = 0.5;   // Min risk tier (% of capital)
+input double InpMedRiskPercent = 1.0;   // Medium risk tier (% of capital)
+input double InpMaxRiskPercent = 2.0;   // Max risk tier (% of capital)
 
-enum ELC_RiskMode
-{
-   ELC_RISK_PCT_BALANCE = 0,
-   ELC_RISK_PCT_EQUITY  = 1,
-   ELC_RISK_FIXED_MONEY = 2
-};
-
-input ELC_Direction InpDirection        = ELC_BUY;
-input double        InpEntryPrice       = 0.0;   // 0 = use current market price
-input double        InpStopLossPrice    = 0.0;   // required
-input double        InpTakeProfitPrice  = 0.0;   // 0 = skip R:R display
-input ELC_RiskMode  InpRiskMode         = ELC_RISK_PCT_BALANCE;
-input double        InpRiskValue        = 1.0;   // percent (of balance/equity) or money, per InpRiskMode
-
-input bool          InpShowPanel        = true;
-input color         InpPanelColor       = C'7,10,14';
-input color         InpPanelBorderColor = C'56,65,76';
-input color         InpTextColor        = C'204,211,218';
-input color         InpBuyColor         = C'0,208,142';
-input color         InpSellColor        = C'235,72,96';
-input color         InpWarnColor        = C'237,185,58';
+input color  InpPanelColor       = C'7,10,14';
+input color  InpPanelBorderColor = C'56,65,76';
+input color  InpTextColor        = C'204,211,218';
+input color  InpAccentColor      = C'237,185,58';
+input color  InpEditBgColor      = C'20,24,30';
+input color  InpEditTextColor    = C'255,255,255';
+input color  InpButtonColor      = C'0,208,142';
+input color  InpButtonTextColor  = C'7,10,14';
+input color  InpMinRiskColor     = C'52,211,176';
+input color  InpMedRiskColor     = C'237,185,58';
+input color  InpMaxRiskColor     = C'235,72,96';
+input color  InpErrorColor       = C'235,72,96';
 
 #define PRODUCT_NAME "EzyMap Lot Size Calculator"
-string PREFIX="EZLC_";
+string PREFIX="EZLOT_";
 
-//----------------------------- Drawing ------------------------------
-void DeleteObject(string suffix) { ObjectDelete(0,PREFIX+suffix); }
+int PX=14;   // panel x
+int PY=38;   // panel y
+int PW=332;  // panel width
+int PH=372;  // panel height
 
-void ClearPanel()
+//----------------------------- Helpers ------------------------------
+void SetCommon(string n,bool selectable)
 {
-   ObjectDelete(0,PREFIX+"PANEL");
-   for(int i=0;i<12;i++)
-      DeleteObject("ROW_"+IntegerToString(i));
-}
-
-void SetObjectCommon(string n)
-{
-   ObjectSetInteger(0,n,OBJPROP_SELECTABLE,false);
+   ObjectSetInteger(0,n,OBJPROP_CORNER,CORNER_LEFT_UPPER);
+   ObjectSetInteger(0,n,OBJPROP_SELECTABLE,selectable);
    ObjectSetInteger(0,n,OBJPROP_SELECTED,false);
    ObjectSetInteger(0,n,OBJPROP_HIDDEN,false);
    ObjectSetInteger(0,n,OBJPROP_BACK,false);
@@ -59,207 +45,252 @@ void SetObjectCommon(string n)
    ObjectSetInteger(0,n,OBJPROP_ZORDER,100);
 }
 
-void Panel(int width,int height)
+void MakePanel()
 {
    string n=PREFIX+"PANEL";
-   if(ObjectFind(0,n)<0)
-      ObjectCreate(0,n,OBJ_RECTANGLE_LABEL,0,0,0);
-
-   ObjectSetInteger(0,n,OBJPROP_CORNER,CORNER_LEFT_UPPER);
-   ObjectSetInteger(0,n,OBJPROP_XDISTANCE,14);
-   ObjectSetInteger(0,n,OBJPROP_YDISTANCE,38);
-   ObjectSetInteger(0,n,OBJPROP_XSIZE,width);
-   ObjectSetInteger(0,n,OBJPROP_YSIZE,height);
+   if(ObjectFind(0,n)<0) ObjectCreate(0,n,OBJ_RECTANGLE_LABEL,0,0,0);
+   ObjectSetInteger(0,n,OBJPROP_XDISTANCE,PX);
+   ObjectSetInteger(0,n,OBJPROP_YDISTANCE,PY);
+   ObjectSetInteger(0,n,OBJPROP_XSIZE,PW);
+   ObjectSetInteger(0,n,OBJPROP_YSIZE,PH);
    ObjectSetInteger(0,n,OBJPROP_BGCOLOR,InpPanelColor);
    ObjectSetInteger(0,n,OBJPROP_BORDER_COLOR,InpPanelBorderColor);
    ObjectSetInteger(0,n,OBJPROP_COLOR,InpPanelBorderColor);
    ObjectSetInteger(0,n,OBJPROP_STYLE,STYLE_SOLID);
    ObjectSetInteger(0,n,OBJPROP_WIDTH,1);
-   SetObjectCommon(n);
+   SetCommon(n,false);
 }
 
-void Row(int row,string value,color clr,bool bold=false)
+void MakeLabel(string suffix,int x,int y,string text,color clr,int size=9,bool bold=false)
 {
-   string n=PREFIX+"ROW_"+IntegerToString(row);
-   if(ObjectFind(0,n)<0)
-      ObjectCreate(0,n,OBJ_LABEL,0,0,0);
-
-   ObjectSetInteger(0,n,OBJPROP_CORNER,CORNER_LEFT_UPPER);
-   ObjectSetInteger(0,n,OBJPROP_XDISTANCE,26);
-   ObjectSetInteger(0,n,OBJPROP_YDISTANCE,50+row*17);
+   string n=PREFIX+suffix;
+   if(ObjectFind(0,n)<0) ObjectCreate(0,n,OBJ_LABEL,0,0,0);
+   ObjectSetInteger(0,n,OBJPROP_XDISTANCE,x);
+   ObjectSetInteger(0,n,OBJPROP_YDISTANCE,y);
    ObjectSetInteger(0,n,OBJPROP_COLOR,clr);
-   ObjectSetInteger(0,n,OBJPROP_FONTSIZE,bold?9:8);
+   ObjectSetInteger(0,n,OBJPROP_FONTSIZE,size);
    ObjectSetString(0,n,OBJPROP_FONT,bold?"Arial Bold":"Arial");
-   ObjectSetString(0,n,OBJPROP_TEXT,value);
-   SetObjectCommon(n);
+   ObjectSetString(0,n,OBJPROP_TEXT,text);
+   SetCommon(n,false);
 }
 
-string PriceText(double v)
+void SetLabelText(string suffix,string text,color clr)
 {
-   int digits=(int)SymbolInfoInteger(_Symbol,SYMBOL_DIGITS);
-   return DoubleToString(v,digits);
+   string n=PREFIX+suffix;
+   if(ObjectFind(0,n)<0) return;
+   ObjectSetString(0,n,OBJPROP_TEXT,text);
+   ObjectSetInteger(0,n,OBJPROP_COLOR,clr);
 }
 
-string MoneyText(double v)
+void MakeEdit(string suffix,int x,int y,int w,int h,string defaultText)
 {
-   return DoubleToString(v,2)+" "+AccountInfoString(ACCOUNT_CURRENCY);
+   string n=PREFIX+suffix;
+   if(ObjectFind(0,n)<0)
+   {
+      ObjectCreate(0,n,OBJ_EDIT,0,0,0);
+      ObjectSetString(0,n,OBJPROP_TEXT,defaultText);
+   }
+   ObjectSetInteger(0,n,OBJPROP_XDISTANCE,x);
+   ObjectSetInteger(0,n,OBJPROP_YDISTANCE,y);
+   ObjectSetInteger(0,n,OBJPROP_XSIZE,w);
+   ObjectSetInteger(0,n,OBJPROP_YSIZE,h);
+   ObjectSetInteger(0,n,OBJPROP_BGCOLOR,InpEditBgColor);
+   ObjectSetInteger(0,n,OBJPROP_COLOR,InpEditTextColor);
+   ObjectSetInteger(0,n,OBJPROP_BORDER_COLOR,InpPanelBorderColor);
+   ObjectSetInteger(0,n,OBJPROP_FONTSIZE,10);
+   ObjectSetString(0,n,OBJPROP_FONT,"Arial");
+   ObjectSetInteger(0,n,OBJPROP_ALIGN,ALIGN_CENTER);
+   ObjectSetInteger(0,n,OBJPROP_READONLY,false);
+   SetCommon(n,true);
 }
 
-//----------------------------- Core logic ---------------------------
-void OnStart()
+void MakeButton(string suffix,int x,int y,int w,int h,string text)
 {
-   ClearPanel();
+   string n=PREFIX+suffix;
+   if(ObjectFind(0,n)<0) ObjectCreate(0,n,OBJ_BUTTON,0,0,0);
+   ObjectSetInteger(0,n,OBJPROP_XDISTANCE,x);
+   ObjectSetInteger(0,n,OBJPROP_YDISTANCE,y);
+   ObjectSetInteger(0,n,OBJPROP_XSIZE,w);
+   ObjectSetInteger(0,n,OBJPROP_YSIZE,h);
+   ObjectSetInteger(0,n,OBJPROP_BGCOLOR,InpButtonColor);
+   ObjectSetInteger(0,n,OBJPROP_COLOR,InpButtonTextColor);
+   ObjectSetInteger(0,n,OBJPROP_BORDER_COLOR,InpButtonColor);
+   ObjectSetInteger(0,n,OBJPROP_FONTSIZE,10);
+   ObjectSetString(0,n,OBJPROP_FONT,"Arial Bold");
+   ObjectSetString(0,n,OBJPROP_TEXT,text);
+   ObjectSetInteger(0,n,OBJPROP_STATE,false);
+   SetCommon(n,true);
+}
 
-   if(!SymbolSelect(_Symbol,true))
+string GetEditText(string suffix)
+{
+   string n=PREFIX+suffix;
+   return ObjectGetString(0,n,OBJPROP_TEXT);
+}
+
+string TrimBoth(string s)
+{
+   StringTrimLeft(s);
+   StringTrimRight(s);
+   return s;
+}
+
+int VolumeDecimals(double step)
+{
+   if(step>=1.0) return 0;
+   if(step>=0.1) return 1;
+   return 2;
+}
+
+//------------------------------ Build GUI ----------------------------
+void BuildGUI()
+{
+   MakePanel();
+
+   MakeLabel("TITLE",26,48,"EZYMAP LOT SIZE CALCULATOR",InpAccentColor,11,true);
+   MakeLabel("SUB",26,68,"Fill in the 3 fields, then click CALCULATE",InpTextColor,8,false);
+
+   MakeLabel("LBL_PAIR",26,92,"PAIR (SYMBOL)",InpTextColor,8,false);
+   MakeEdit("EDIT_PAIR",26,108,280,26,_Symbol);
+
+   MakeLabel("LBL_CAP",26,142,"CAPITAL / BALANCE ($)",InpTextColor,8,false);
+   MakeEdit("EDIT_CAPITAL",26,158,280,26,DoubleToString(AccountInfoDouble(ACCOUNT_BALANCE),2));
+
+   MakeLabel("LBL_SL",26,192,"STOP LOSS DISTANCE (POINTS)",InpTextColor,8,false);
+   MakeEdit("EDIT_SL",26,208,280,26,"200");
+
+   MakeButton("BTN_CALC",26,242,280,32,"CALCULATE LOT SIZE");
+
+   MakeLabel("RES_HEAD",26,286,"RESULTS",InpTextColor,9,true);
+   MakeLabel("RES_MIN",26,304,"",InpMinRiskColor,9,false);
+   MakeLabel("RES_MED",26,322,"",InpMedRiskColor,9,false);
+   MakeLabel("RES_MAX",26,340,"",InpMaxRiskColor,9,false);
+   MakeLabel("RES_NOTE",26,358,"Enter values above and press CALCULATE.",InpTextColor,8,false);
+}
+
+//----------------------------- Calculation ---------------------------
+void DoCalculate()
+{
+   string pair=TrimBoth(GetEditText("EDIT_PAIR"));
+   StringToUpper(pair);
+   if(pair=="") pair=_Symbol;
+
+   if(!SymbolSelect(pair,true))
    {
-      Alert(PRODUCT_NAME+": failed to select symbol "+_Symbol);
+      SetLabelText("RES_MIN","",InpMinRiskColor);
+      SetLabelText("RES_MED","",InpMedRiskColor);
+      SetLabelText("RES_MAX","",InpMaxRiskColor);
+      SetLabelText("RES_NOTE","⚠ Symbol \""+pair+"\" not found - check spelling / Market Watch.",InpErrorColor);
+      ChartRedraw(0);
       return;
    }
 
-   bool isBuy=(InpDirection==ELC_BUY);
-   double entry=InpEntryPrice;
-   if(entry<=0.0)
-      entry=isBuy?SymbolInfoDouble(_Symbol,SYMBOL_ASK):SymbolInfoDouble(_Symbol,SYMBOL_BID);
+   double capital=StringToDouble(TrimBoth(GetEditText("EDIT_CAPITAL")));
+   double slPoints=StringToDouble(TrimBoth(GetEditText("EDIT_SL")));
 
-   if(InpStopLossPrice<=0.0)
+   if(capital<=0.0 || slPoints<=0.0)
    {
-      string msg=PRODUCT_NAME+": set InpStopLossPrice to a valid price before running.";
-      Alert(msg); Print(msg);
+      SetLabelText("RES_MIN","",InpMinRiskColor);
+      SetLabelText("RES_MED","",InpMedRiskColor);
+      SetLabelText("RES_MAX","",InpMaxRiskColor);
+      SetLabelText("RES_NOTE","⚠ Capital and SL Distance must both be greater than 0.",InpErrorColor);
+      ChartRedraw(0);
       return;
    }
 
-   double sl=InpStopLossPrice;
-   bool slValid=isBuy?(sl<entry):(sl>entry);
-   if(!slValid)
+   double tickValue=SymbolInfoDouble(pair,SYMBOL_TRADE_TICK_VALUE);
+   double tickSize =SymbolInfoDouble(pair,SYMBOL_TRADE_TICK_SIZE);
+   double point    =SymbolInfoDouble(pair,SYMBOL_POINT);
+   double volMin=SymbolInfoDouble(pair,SYMBOL_VOLUME_MIN);
+   double volMax=SymbolInfoDouble(pair,SYMBOL_VOLUME_MAX);
+   double volStep=SymbolInfoDouble(pair,SYMBOL_VOLUME_STEP);
+
+   if(tickValue<=0.0 || tickSize<=0.0 || point<=0.0 || volStep<=0.0)
    {
-      string msg=PRODUCT_NAME+": Stop Loss is on the wrong side of Entry for a "+(isBuy?"BUY":"SELL")+" trade.";
-      Alert(msg); Print(msg);
-      DrawError(msg);
+      SetLabelText("RES_NOTE","⚠ Trade specification unavailable for \""+pair+"\" - try again shortly.",InpErrorColor);
+      ChartRedraw(0);
       return;
    }
 
-   double tickValue=SymbolInfoDouble(_Symbol,SYMBOL_TRADE_TICK_VALUE);
-   double tickSize =SymbolInfoDouble(_Symbol,SYMBOL_TRADE_TICK_SIZE);
-   double volMin=SymbolInfoDouble(_Symbol,SYMBOL_VOLUME_MIN);
-   double volMax=SymbolInfoDouble(_Symbol,SYMBOL_VOLUME_MAX);
-   double volStep=SymbolInfoDouble(_Symbol,SYMBOL_VOLUME_STEP);
-
-   if(tickValue<=0.0 || tickSize<=0.0 || volStep<=0.0)
+   double moneyPerPointPerLot=(tickValue/tickSize)*point;
+   double moneyPerLotAtSL=moneyPerPointPerLot*slPoints;
+   if(moneyPerLotAtSL<=0.0)
    {
-      string msg=PRODUCT_NAME+": symbol trade specification unavailable (tick value/size/volume step). Try again once the symbol is fully synced.";
-      Alert(msg); Print(msg);
-      DrawError(msg);
+      SetLabelText("RES_NOTE","⚠ Could not compute risk per lot - check SL distance.",InpErrorColor);
+      ChartRedraw(0);
       return;
    }
 
-   double slDistance=MathAbs(entry-sl);
-   double slTicks=slDistance/tickSize;
-   double moneyPerLotAtSL=slTicks*tickValue;
+   int decimals=VolumeDecimals(volStep);
+   string warn="";
+   string minTxt=BuildTierText("MIN RISK",InpMinRiskPercent,capital,moneyPerLotAtSL,volMin,volMax,volStep,decimals,warn);
+   string medTxt=BuildTierText("MED RISK",InpMedRiskPercent,capital,moneyPerLotAtSL,volMin,volMax,volStep,decimals,warn);
+   string maxTxt=BuildTierText("MAX RISK",InpMaxRiskPercent,capital,moneyPerLotAtSL,volMin,volMax,volStep,decimals,warn);
 
-   double balance=AccountInfoDouble(ACCOUNT_BALANCE);
-   double equity =AccountInfoDouble(ACCOUNT_EQUITY);
+   SetLabelText("RES_MIN",minTxt,InpMinRiskColor);
+   SetLabelText("RES_MED",medTxt,InpMedRiskColor);
+   SetLabelText("RES_MAX",maxTxt,InpMaxRiskColor);
 
-   double riskMoney=0.0;
-   string riskLabel="";
-   if(InpRiskMode==ELC_RISK_PCT_BALANCE)
-   {
-      riskMoney=balance*InpRiskValue/100.0;
-      riskLabel=DoubleToString(InpRiskValue,2)+"% of Balance";
-   }
-   else if(InpRiskMode==ELC_RISK_PCT_EQUITY)
-   {
-      riskMoney=equity*InpRiskValue/100.0;
-      riskLabel=DoubleToString(InpRiskValue,2)+"% of Equity";
-   }
-   else
-   {
-      riskMoney=InpRiskValue;
-      riskLabel="Fixed "+MoneyText(InpRiskValue);
-   }
+   string note=pair+"  •  SL "+DoubleToString(slPoints,0)+" pts  •  "+DoubleToString(moneyPerLotAtSL,2)+" "+AccountInfoString(ACCOUNT_CURRENCY)+" risk per 1.00 lot";
+   if(warn!="") note+="   "+warn;
+   SetLabelText("RES_NOTE",note,warn!=""?InpErrorColor:InpTextColor);
 
-   if(riskMoney<=0.0 || moneyPerLotAtSL<=0.0)
-   {
-      string msg=PRODUCT_NAME+": computed risk amount or SL distance is zero - check inputs.";
-      Alert(msg); Print(msg);
-      DrawError(msg);
-      return;
-   }
+   ChartRedraw(0);
+}
 
+string BuildTierText(string label,double riskPercent,double capital,double moneyPerLotAtSL,
+                      double volMin,double volMax,double volStep,int decimals,string &warnOut)
+{
+   double riskMoney=capital*riskPercent/100.0;
    double rawLots=riskMoney/moneyPerLotAtSL;
    double lots=MathFloor(rawLots/volStep)*volStep;
-   bool belowMin=false, cappedMax=false;
-   if(lots<volMin) { lots=volMin; belowMin=true; }
-   if(lots>volMax) { lots=volMax; cappedMax=true; }
+
+   string flag="";
+   if(lots<volMin) { lots=volMin; flag=" (min lot)"; warnOut=" ⚠ some tiers floored to broker min lot."; }
+   if(lots>volMax) { lots=volMax; flag=" (max lot)"; }
    lots=NormalizeDouble(lots,8);
 
    double actualRisk=lots*moneyPerLotAtSL;
-   double actualRiskPctBalance=(balance>0.0)?actualRisk/balance*100.0:0.0;
 
-   bool haveTP=(InpTakeProfitPrice>0.0);
-   double rr=0.0, rewardMoney=0.0;
-   if(haveTP)
+   return label+" ("+DoubleToString(riskPercent,2)+"%):  "+DoubleToString(lots,decimals)+" lots"+flag+
+          "   ~"+DoubleToString(actualRisk,2)+" "+AccountInfoString(ACCOUNT_CURRENCY);
+}
+
+//--------------------------- MT5 events -----------------------------
+int OnInit()
+{
+   IndicatorSetString(INDICATOR_SHORTNAME,PRODUCT_NAME);
+   BuildGUI();
+   DoCalculate();
+   ChartRedraw(0);
+   return INIT_SUCCEEDED;
+}
+
+void OnDeinit(const int reason)
+{
+   ObjectsDeleteAll(0,PREFIX);
+   ChartRedraw(0);
+}
+
+void OnChartEvent(const int id,const long &lparam,const double &dparam,const string &sparam)
+{
+   if(id==CHARTEVENT_OBJECT_CLICK && sparam==PREFIX+"BTN_CALC")
    {
-      double tp=InpTakeProfitPrice;
-      double rewardDistance=MathAbs(tp-entry);
-      rr=(slDistance>0.0)?rewardDistance/slDistance:0.0;
-      rewardMoney=lots*(rewardDistance/tickSize)*tickValue;
+      ObjectSetInteger(0,sparam,OBJPROP_STATE,false);
+      DoCalculate();
+      return;
    }
 
-   int slPoints=(int)MathRound(slDistance/_Point);
-
-   Print("=== ",PRODUCT_NAME," ===");
-   Print(_Symbol," ",(isBuy?"BUY":"SELL")," Entry=",PriceText(entry)," SL=",PriceText(sl)," SL(points)=",slPoints);
-   Print("Risk: ",riskLabel," = ",MoneyText(riskMoney));
-   Print("Lot size: ",DoubleToString(lots,2)," (raw ",DoubleToString(rawLots,2),", step ",DoubleToString(volStep,2),", min ",DoubleToString(volMin,2),", max ",DoubleToString(volMax,2),")");
-   Print("Actual risk at this lot size: ",MoneyText(actualRisk)," (",DoubleToString(actualRiskPctBalance,2),"% of balance)");
-   if(haveTP) Print("R:R = 1:",DoubleToString(rr,2)," | Potential reward: ",MoneyText(rewardMoney));
-   if(belowMin) Print("WARNING: raw lot size was below broker minimum - risk floored up to ",DoubleToString(volMin,2)," lots.");
-   if(cappedMax) Print("WARNING: raw lot size exceeded broker maximum - capped to ",DoubleToString(volMax,2)," lots.");
-
-   if(InpShowPanel)
-      DrawPanel(isBuy,entry,sl,slPoints,riskLabel,riskMoney,rawLots,lots,actualRisk,actualRiskPctBalance,haveTP,rr,rewardMoney,belowMin,cappedMax);
-
-   string alertMsg=PRODUCT_NAME+"\n"+_Symbol+" "+(isBuy?"BUY":"SELL")+"\nLOT SIZE: "+DoubleToString(lots,2)+"\nRISK: "+MoneyText(actualRisk)+" ("+DoubleToString(actualRiskPctBalance,2)+"%)";
-   if(haveTP) alertMsg+="\nR:R  1:"+DoubleToString(rr,2);
-   Alert(alertMsg);
-
-   ChartRedraw(0);
+   if(id==CHARTEVENT_OBJECT_ENDEDIT &&
+      (sparam==PREFIX+"EDIT_PAIR" || sparam==PREFIX+"EDIT_CAPITAL" || sparam==PREFIX+"EDIT_SL"))
+   {
+      DoCalculate();
+      return;
+   }
 }
 
-void DrawError(string msg)
+int OnCalculate(const int rates_total,const int prev_calculated,const datetime &time[],const double &open[],const double &high[],const double &low[],const double &close[],const long &tick_volume[],const long &volume[],const int &spread[])
 {
-   if(!InpShowPanel) return;
-   Panel(340,50);
-   Row(0,"LOT SIZE CALCULATOR - ERROR",InpWarnColor,true);
-   Row(1,msg,InpTextColor,false);
-   ChartRedraw(0);
-}
-
-void DrawPanel(bool isBuy,double entry,double sl,int slPoints,string riskLabel,double riskMoney,
-               double rawLots,double lots,double actualRisk,double actualRiskPct,
-               bool haveTP,double rr,double rewardMoney,bool belowMin,bool cappedMax)
-{
-   color accent=isBuy?InpBuyColor:InpSellColor;
-   int rows=8+(haveTP?1:0)+(belowMin||cappedMax?1:0);
-   Panel(340,34+rows*17);
-
-   int r=0;
-   Row(r++,"LOT SIZE CALCULATOR • "+(isBuy?"BUY":"SELL"),accent,true);
-   Row(r++,_Symbol,InpTextColor,false);
-   Row(r++,"ENTRY  "+PriceText(entry),InpTextColor,false);
-   Row(r++,"SL     "+PriceText(sl)+"  ("+IntegerToString(slPoints)+" pts)",InpSellColor,false);
-   Row(r++,"RISK   "+riskLabel,InpTextColor,false);
-   Row(r++,"LOT SIZE   "+DoubleToString(lots,2),accent,true);
-   Row(r++,"ACTUAL RISK  "+MoneyText(actualRisk)+" ("+DoubleToString(actualRiskPct,2)+"%)",InpTextColor,false);
-   if(haveTP)
-      Row(r++,"R:R  1:"+DoubleToString(rr,2)+"   REWARD "+MoneyText(rewardMoney),InpBuyColor,false);
-   if(belowMin)
-      Row(r++,"⚠ FLOORED TO BROKER MIN LOT",InpWarnColor,true);
-   else if(cappedMax)
-      Row(r++,"⚠ CAPPED TO BROKER MAX LOT",InpWarnColor,true);
-   Row(r++,"EZYMAP • SCRIPTS",InpTextColor,false);
-
-   for(int i=rows;i<12;i++)
-      DeleteObject("ROW_"+IntegerToString(i));
+   return rates_total;
 }
 //+------------------------------------------------------------------+
