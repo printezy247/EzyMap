@@ -33,7 +33,7 @@ string PREFIX="EZRR_";
 int PX=14;
 int PY=38;
 int PW=332;
-int PH=666;
+int PH=570;
 
 #define PAIR_COUNT 26
 string g_aliasKeys[PAIR_COUNT] =
@@ -165,11 +165,11 @@ string TrimBoth(string s)
 }
 
 //------------------------------ Layout -------------------------------
-#define DIR_Y 106
+#define DIR_Y 100
 #define HEAD_X 26
-#define HEAD_Y 158
+#define HEAD_Y 148
 #define HEAD_W 280
-#define HEAD_H 28
+#define HEAD_H 26
 
 #define DD_COLS 2
 #define DD_ITEM_W 136
@@ -188,41 +188,41 @@ void BuildGUI()
    MakeButton("BTN_CLOSE",PX+PW-38,PY+6,30,26,"✕",InpCloseBtnColor,InpCloseBtnTextColor,11);
 
    MakeLabel("TITLE",26,48,"EZYMAP RISK:REWARD & BREAKEVEN CALC",InpAccentColor,10,true);
-   MakeLabel("SUB",26,68,"1) Direction+Pair  2) Prices/Lot  3) Calculate",InpTextColor,8,false);
+   MakeLabel("SUB",26,66,"1) Direction+Pair  2) Prices/Lot  3) Calculate",InpTextColor,8,false);
 
-   MakeLabel("LBL_DIR",26,90,"DIRECTION",InpTextColor,8,false);
-   MakeButton("BTN_BUY",26,DIR_Y,136,28,"BUY",InpSymBtnColor,InpSymBtnTextColor,10);
-   MakeButton("BTN_SELL",170,DIR_Y,136,28,"SELL",InpSymBtnColor,InpSymBtnTextColor,10);
+   MakeLabel("LBL_DIR",26,86,"DIRECTION",InpTextColor,8,false);
+   MakeButton("BTN_BUY",26,DIR_Y,136,26,"BUY",InpSymBtnColor,InpSymBtnTextColor,10);
+   MakeButton("BTN_SELL",170,DIR_Y,136,26,"SELL",InpSymBtnColor,InpSymBtnTextColor,10);
 
-   MakeLabel("LBL_PAIR",HEAD_X,142,"SELECT PAIR",InpTextColor,8,false);
+   MakeLabel("LBL_PAIR",HEAD_X,134,"SELECT PAIR",InpTextColor,8,false);
    MakeButton("BTN_HEAD",HEAD_X,HEAD_Y,HEAD_W,HEAD_H,"TAP TO SELECT PAIR   ▾",InpEditBgColor,InpTextColor,9);
-   MakeLabel("SEL_NOTE",26,194,"No pair selected yet.",InpTextColor,8,false);
+   MakeLabel("SEL_NOTE",26,182,"No pair selected yet.",InpTextColor,8,false);
 
-   MakeLabel("LBL_ENTRY",26,218,"ENTRY PRICE",InpTextColor,8,false);
-   MakeEdit("EDIT_ENTRY",26,234,280,26,"0.00000");
+   MakeLabel("LBL_ENTRY",26,200,"ENTRY PRICE",InpTextColor,8,false);
+   MakeEdit("EDIT_ENTRY",26,214,280,22,"0.00000");
 
-   MakeLabel("LBL_SL",26,268,"STOP LOSS PRICE",InpTextColor,8,false);
-   MakeEdit("EDIT_SL",26,284,280,26,"0.00000");
+   MakeLabel("LBL_SL",26,236,"STOP LOSS PRICE",InpTextColor,8,false);
+   MakeEdit("EDIT_SL",26,250,280,22,"0.00000");
 
-   MakeLabel("LBL_TP",26,318,"TAKE PROFIT PRICE",InpTextColor,8,false);
-   MakeEdit("EDIT_TP",26,334,280,26,"0.00000");
+   MakeLabel("LBL_TP",26,272,"TAKE PROFIT PRICE",InpTextColor,8,false);
+   MakeEdit("EDIT_TP",26,286,280,22,"0.00000");
 
-   MakeLabel("LBL_LOT",26,368,"LOT SIZE",InpTextColor,8,false);
-   MakeEdit("EDIT_LOT",26,384,280,26,"0.01");
+   MakeLabel("LBL_LOT",26,308,"LOT SIZE",InpTextColor,8,false);
+   MakeEdit("EDIT_LOT",26,322,280,22,"0.01");
 
-   MakeLabel("LBL_COMM",26,418,"COMMISSION (round turn, $ per lot)",InpTextColor,8,false);
-   MakeEdit("EDIT_COMM",26,434,280,26,"0");
+   MakeLabel("LBL_COMM",26,344,"COMMISSION (round turn, $ per lot)",InpTextColor,8,false);
+   MakeEdit("EDIT_COMM",26,358,280,22,"0");
 
-   MakeButton("BTN_CALC",26,468,280,32,"CALCULATE",InpButtonColor,InpButtonTextColor,10);
+   MakeButton("BTN_CALC",26,388,280,28,"CALCULATE",InpButtonColor,InpButtonTextColor,10);
 
-   MakeLabel("RES_HEAD",26,512,"RESULTS",InpTextColor,9,true);
-   MakeLabel("RES_RISK",26,530,"",InpSellColor,9,false);
-   MakeLabel("RES_REWARD",26,548,"",InpBuyColor,9,false);
-   MakeLabel("RES_RR",26,566,"",InpAccentColor,9,true);
-   MakeLabel("RES_WINRATE",26,584,"",InpTextColor,8,false);
-   MakeLabel("RES_BE",26,602,"",InpAccentColor,9,false);
-   MakeLabel("RES_NET",26,620,"",InpTextColor,8,false);
-   MakeLabel("RES_NOTE",26,638,"Pick Direction + Pair above to begin.",InpTextColor,8,false);
+   MakeLabel("RES_HEAD",26,430,"RESULTS",InpTextColor,9,true);
+   MakeLabel("RES_RISK",26,446,"",InpSellColor,9,false);
+   MakeLabel("RES_REWARD",26,462,"",InpBuyColor,9,false);
+   MakeLabel("RES_RR",26,478,"",InpAccentColor,9,true);
+   MakeLabel("RES_WINRATE",26,494,"",InpTextColor,8,false);
+   MakeLabel("RES_BE",26,510,"",InpAccentColor,9,false);
+   MakeLabel("RES_NET",26,526,"",InpTextColor,8,false);
+   MakeLabel("RES_NOTE",26,542,"Pick Direction + Pair above to begin.",InpTextColor,8,false);
 
    RefreshDirButtons();
 }
