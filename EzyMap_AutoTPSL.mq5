@@ -148,19 +148,22 @@ void MakeButton(string suffix,int x,int y,int w,int h,string text,color bg,color
    SetCommon(n,zorder);
 }
 
-// Crypto doesn't follow the forex "fractional pip" convention at all, so
-// it gets its own fixed rule (1 pip = $1, the common crypto-CFD
-// convention) regardless of decimal digits. Everything else uses the
-// standard broker-adaptive rule: symbols quoting an extra fractional-pip
-// digit (3 or 5 decimals - e.g. gold at 2015.325, EURUSD at 1.08123) use
-// 1 pip = 10 x point; otherwise 1 pip = 1 x point.
+// Gold and crypto both have fixed, broker-independent pip conventions
+// that don't follow the forex "fractional pip digit count" heuristic -
+// confirmed directly: gold is always 1 pip = 10 points (0.1 price move)
+// regardless of how many decimals the broker quotes, and crypto is
+// always 1 pip = $1. Only true forex pairs use the digit-based rule
+// (3 or 5 decimals -> 10 x point, otherwise 1 x point).
 double PipSize(string sym)
 {
    double point=SymbolInfoDouble(sym,SYMBOL_POINT);
    if(point<=0.0) return 0.0;
 
    string s=sym; StringToUpper(s);
+   bool isGold  =(StringFind(s,"XAU")>=0 || StringFind(s,"GOLD")>=0);
    bool isCrypto=(StringFind(s,"BTC")>=0 || StringFind(s,"ETH")>=0 || StringFind(s,"XBT")>=0 || StringFind(s,"LTC")>=0 || StringFind(s,"XRP")>=0);
+
+   if(isGold)   return point*10.0;
    if(isCrypto) return MathMax(1.0,point);
 
    int digits=(int)SymbolInfoInteger(sym,SYMBOL_DIGITS);
