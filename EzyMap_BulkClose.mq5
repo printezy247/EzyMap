@@ -38,7 +38,7 @@ string PREFIX="EZBC_";
 int PX=14;
 int PY=38;
 int PW=310;
-int PH=504;
+int PH=522;
 
 //----------------------------- Helpers ------------------------------
 void SetCommon(string n,int zorder=100)
@@ -151,33 +151,49 @@ void BuildGUI()
    MakeLabel("TITLE",26,48,"EZYMAP BULK CLOSE",InpAccentColor,10,true);
    MakeLabel("SUB",26,66,"Trade management - confirms before closing",InpTextColor,8,false);
 
-   MakeLabel("SUMMARY",26,86,"Loading...",InpTextColor,9,true);
+   MakeLabel("ACCOUNT_MODE",26,84,"Loading...",InpTextColor,8,false);
+   MakeLabel("SUMMARY",26,102,"Loading...",InpTextColor,9,true);
 
-   MakeButton("BTN_CLOSE_ALL",26,108,280,30,"CLOSE ALL POSITIONS (ALL SYMBOLS)",InpDangerColor,InpPanelColor,9);
-   MakeButton("BTN_CLOSE_PROFIT",26,144,280,28,"CLOSE ALL PROFITABLE",InpProfitColor,InpPanelColor,9);
-   MakeButton("BTN_CLOSE_LOSS",26,176,280,28,"CLOSE ALL LOSING",InpLossColor,InpPanelColor,9);
-   MakeButton("BTN_CLOSE_SYMBOL",26,208,280,28,"CLOSE THIS SYMBOL ONLY",InpAccentColor,InpPanelColor,9);
+   MakeButton("BTN_CLOSE_ALL",26,124,280,30,"CLOSE ALL POSITIONS (ALL SYMBOLS)",InpDangerColor,InpPanelColor,9);
+   MakeButton("BTN_CLOSE_PROFIT",26,160,280,28,"CLOSE ALL PROFITABLE",InpProfitColor,InpPanelColor,9);
+   MakeButton("BTN_CLOSE_LOSS",26,192,280,28,"CLOSE ALL LOSING",InpLossColor,InpPanelColor,9);
+   MakeButton("BTN_CLOSE_SYMBOL",26,224,280,28,"CLOSE THIS SYMBOL ONLY",InpAccentColor,InpPanelColor,9);
 
-   MakeLabel("LBL_PCT",26,244,"PARTIAL CLOSE % (this symbol)",InpTextColor,8,false);
-   MakeEdit("EDIT_PCT",26,258,280,22,"50");
-   MakeButton("BTN_PARTIAL",26,284,280,28,"PARTIAL CLOSE THIS SYMBOL",InpNeutralBtnColor,InpNeutralTextColor,9);
+   MakeLabel("LBL_PCT",26,260,"PARTIAL CLOSE % (this symbol)",InpTextColor,8,false);
+   MakeEdit("EDIT_PCT",26,274,280,22,"50");
+   MakeButton("BTN_PARTIAL",26,300,280,28,"PARTIAL CLOSE THIS SYMBOL",InpNeutralBtnColor,InpNeutralTextColor,9);
 
-   MakeButton("BTN_DELETE_PENDING",26,320,280,28,"DELETE ALL PENDING ORDERS",InpNeutralBtnColor,InpNeutralTextColor,9);
+   MakeButton("BTN_DELETE_PENDING",26,336,280,28,"DELETE ALL PENDING ORDERS",InpNeutralBtnColor,InpNeutralTextColor,9);
 
-   MakeLabel("LBL_LAYERS_HEAD",26,356,"LAYERS ON "+_Symbol,InpTextColor,8,true);
-   MakeLabel("LAYER_COUNTS",26,372,"Loading...",InpTextColor,9,false);
+   MakeLabel("LBL_LAYERS_HEAD",26,372,"LAYERS ON "+_Symbol,InpTextColor,8,true);
+   MakeLabel("LAYER_COUNTS",26,388,"Loading...",InpTextColor,9,false);
 
-   MakeLabel("LBL_LAYER_N",26,396,"LAYERS TO CLOSE (BUY=high first, SELL=low first)",InpTextColor,8,false);
-   MakeEdit("EDIT_LAYER_COUNT",26,410,280,22,"1");
-   MakeButton("BTN_CLOSE_BUY_LAYERS",26,436,136,28,"CLOSE BUY LAYERS",InpProfitColor,InpPanelColor,9);
-   MakeButton("BTN_CLOSE_SELL_LAYERS",170,436,136,28,"CLOSE SELL LAYERS",InpLossColor,InpPanelColor,9);
+   MakeLabel("LBL_LAYER_N",26,412,"LAYERS TO CLOSE (BUY=high first, SELL=low first)",InpTextColor,8,false);
+   MakeEdit("EDIT_LAYER_COUNT",26,426,280,22,"1");
+   MakeButton("BTN_CLOSE_BUY_LAYERS",26,452,136,28,"CLOSE BUY LAYERS",InpProfitColor,InpPanelColor,9);
+   MakeButton("BTN_CLOSE_SELL_LAYERS",170,452,136,28,"CLOSE SELL LAYERS",InpLossColor,InpPanelColor,9);
 
-   MakeLabel("NOTE",26,472,_Symbol+" • ready.",InpTextColor,8,false);
+   MakeLabel("NOTE",26,488,_Symbol+" • ready.",InpTextColor,8,false);
+}
+
+bool IsNettingAccount()
+{
+   return (ENUM_ACCOUNT_MARGIN_MODE)AccountInfoInteger(ACCOUNT_MARGIN_MODE)==ACCOUNT_MARGIN_MODE_RETAIL_NETTING;
+}
+
+void RefreshAccountModeBanner()
+{
+   if(IsNettingAccount())
+      SetLabelText("ACCOUNT_MODE","⚠ NETTING account - same-direction trades merge into ONE ticket per symbol, layers won't separate.",InpErrorColor);
+   else
+      SetLabelText("ACCOUNT_MODE","Hedging account - each trade keeps its own ticket.",InpTextColor);
 }
 
 //----------------------------- Live summary ---------------------------
 void RefreshSummary()
 {
+   RefreshAccountModeBanner();
+
    int count=0;
    double totalPL=0.0;
    for(int i=0;i<PositionsTotal();i++)
