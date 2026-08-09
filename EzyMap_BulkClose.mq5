@@ -38,7 +38,7 @@ string PREFIX="EZBC_";
 int PX=14;
 int PY=38;
 int PW=310;
-int PH=386;
+int PH=504;
 
 //----------------------------- Helpers ------------------------------
 void SetCommon(string n,int zorder=100)
@@ -164,7 +164,15 @@ void BuildGUI()
 
    MakeButton("BTN_DELETE_PENDING",26,320,280,28,"DELETE ALL PENDING ORDERS",InpNeutralBtnColor,InpNeutralTextColor,9);
 
-   MakeLabel("NOTE",26,356,_Symbol+" • ready.",InpTextColor,8,false);
+   MakeLabel("LBL_LAYERS_HEAD",26,356,"LAYERS ON "+_Symbol,InpTextColor,8,true);
+   MakeLabel("LAYER_COUNTS",26,372,"Loading...",InpTextColor,9,false);
+
+   MakeLabel("LBL_LAYER_N",26,396,"LAYERS TO CLOSE (BUY=high first, SELL=low first)",InpTextColor,8,false);
+   MakeEdit("EDIT_LAYER_COUNT",26,410,280,22,"1");
+   MakeButton("BTN_CLOSE_BUY_LAYERS",26,436,136,28,"CLOSE BUY LAYERS",InpProfitColor,InpPanelColor,9);
+   MakeButton("BTN_CLOSE_SELL_LAYERS",170,436,136,28,"CLOSE SELL LAYERS",InpLossColor,InpPanelColor,9);
+
+   MakeLabel("NOTE",26,472,_Symbol+" • ready.",InpTextColor,8,false);
 }
 
 //----------------------------- Live summary ---------------------------
@@ -184,7 +192,30 @@ void RefreshSummary()
    color clr=(totalPL>0.0)?InpProfitColor:(totalPL<0.0?InpLossColor:InpTextColor);
    string txt="Open Positions: "+IntegerToString(count)+"   Floating P/L: "+(totalPL>=0.0?"+":"")+DoubleToString(totalPL,2)+" "+AccountInfoString(ACCOUNT_CURRENCY);
    SetLabelText("SUMMARY",txt,clr);
+
+   RefreshLayerCounts();
    ChartRedraw(0);
+}
+
+void RefreshLayerCounts()
+{
+   int buyN=0, sellN=0;
+   double buyVol=0.0, sellVol=0.0;
+   for(int i=0;i<PositionsTotal();i++)
+   {
+      ulong ticket=PositionGetTicket(i);
+      if(ticket==0) continue;
+      if(!PositionSelectByTicket(ticket)) continue;
+      if(PositionGetString(POSITION_SYMBOL)!=_Symbol) continue;
+
+      ENUM_POSITION_TYPE type=(ENUM_POSITION_TYPE)PositionGetInteger(POSITION_TYPE);
+      double vol=PositionGetDouble(POSITION_VOLUME);
+      if(type==POSITION_TYPE_BUY)  { buyN++;  buyVol+=vol; }
+      if(type==POSITION_TYPE_SELL) { sellN++; sellVol+=vol; }
+   }
+
+   string txt="BUY: "+IntegerToString(buyN)+" layer(s), "+DoubleToString(buyVol,2)+" lot   •   SELL: "+IntegerToString(sellN)+" layer(s), "+DoubleToString(sellVol,2)+" lot";
+   SetLabelText("LAYER_COUNTS",txt,InpTextColor);
 }
 
 //----------------------------- Trade actions ---------------------------
@@ -358,6 +389,100 @@ void DoDeletePending()
    ChartRedraw(0);
 }
 
+//----------------------------- Layer close ---------------------------
+// Collects every open position of 'type' on the current symbol and
+// sorts the tickets by open price - ascending (lowest first) or
+// descending (highest first) per 'highestFirst' - using a simple
+// selection sort; position counts here are small (layering stacks,
+// not hundreds of positions) so this stays fast.
+int CollectLayerTickets(ENUM_POSITION_TYPE type,bool highestFirst,ulong &tickets[],double &prices[])
+{
+   int n=0;
+   ArrayResize(tickets,0);
+   ArrayResize(prices,0);
+
+   for(int i=0;i<PositionsTotal();i++)
+   {
+      ulong ticket=PositionGetTicket(i);
+      if(ticket==0) continue;
+      if(!PositionSelectByTicket(ticket)) continue;
+      if(PositionGetString(POSITION_SYMBOL)!=_Symbol) continue;
+      if((ENUM_POSITION_TYPE)PositionGetInteger(POSITION_TYPE)!=type) continue;
+
+      n++;
+      ArrayResize(tickets,n);
+      ArrayResize(prices,n);
+      tickets[n-1]=ticket;
+      prices[n-1]=PositionGetDouble(POSITION_PRICE_OPEN);
+   }
+
+   for(int i=0;i<n;i++)
+      for(int j=i+1;j<n;j++)
+      {
+         bool swapNeeded=highestFirst?(prices[j]>prices[i]):(prices[j]<prices[i]);
+         if(swapNeeded)
+         {
+            double tp=prices[i]; prices[i]=prices[j]; prices[j]=tp;
+            ulong tt=tickets[i]; tickets[i]=tickets[j]; tickets[j]=tt;
+         }
+      }
+
+   return n;
+}
+
+// BUY: highest-price layer first (typically the original/first layer
+// before price dropped - the most underwater one). SELL: lowest-price
+// layer first (typically the original/first layer before price rose).
+void DoCloseLayersByCount(ENUM_POSITION_TYPE type,string label,bool highestFirst)
+{
+   int wantCount=(int)StringToInteger(TrimBoth(GetEditText("EDIT_LAYER_COUNT")));
+   if(wantCount<=0)
+   {
+      SetLabelText("NOTE","⚠ Enter how many layers to close (whole number > 0).",InpErrorColor);
+      ChartRedraw(0);
+      return;
+   }
+
+   ulong tickets[]; double prices[];
+   int total=CollectLayerTickets(type,highestFirst,tickets,prices);
+   if(total==0)
+   {
+      SetLabelText("NOTE","No "+label+" layers open on "+_Symbol+".",InpTextColor);
+      ChartRedraw(0);
+      return;
+   }
+
+   int closeCount=MathMin(wantCount,total);
+
+   double sumPL=0.0, sumVol=0.0;
+   for(int i=0;i<closeCount;i++)
+   {
+      if(!PositionSelectByTicket(tickets[i])) continue;
+      sumPL+=PositionGetDouble(POSITION_PROFIT)+PositionGetDouble(POSITION_SWAP);
+      sumVol+=PositionGetDouble(POSITION_VOLUME);
+   }
+
+   string priceOrderTxt=highestFirst?"HIGHEST-price":"LOWEST-price";
+   string question="Close the "+IntegerToString(closeCount)+" "+priceOrderTxt+" "+label+" layer(s) on "+_Symbol+
+                    " out of "+IntegerToString(total)+" total?\n\nTotal volume: "+DoubleToString(sumVol,2)+
+                    " lots\nNet P/L: "+(sumPL>=0.0?"+":"")+DoubleToString(sumPL,2)+" "+AccountInfoString(ACCOUNT_CURRENCY)+
+                    "\n\nAre you sure?";
+   int res=MessageBox(question,"EzyMap Bulk Close - Confirm",MB_YESNO|MB_ICONWARNING|MB_DEFBUTTON2);
+   if(res!=IDYES)
+   {
+      SetLabelText("NOTE","Cancelled: close "+label+" layers.",InpTextColor);
+      ChartRedraw(0);
+      return;
+   }
+
+   int done=0;
+   for(int i=0;i<closeCount;i++)
+      if(trade.PositionClose(tickets[i])) done++;
+
+   SetLabelText("NOTE","Closed "+IntegerToString(done)+" "+label+" layer(s) ("+priceOrderTxt+" first) on "+_Symbol+".",InpAccentColor);
+   RefreshSummary();
+}
+
 //--------------------------- MT5 events -----------------------------
 int OnInit()
 {
@@ -428,6 +553,18 @@ void OnChartEvent(const int id,const long &lparam,const double &dparam,const str
    {
       ObjectSetInteger(0,sparam,OBJPROP_STATE,false);
       DoDeletePending();
+      return;
+   }
+   if(sparam==PREFIX+"BTN_CLOSE_BUY_LAYERS")
+   {
+      ObjectSetInteger(0,sparam,OBJPROP_STATE,false);
+      DoCloseLayersByCount(POSITION_TYPE_BUY,"BUY",true);
+      return;
+   }
+   if(sparam==PREFIX+"BTN_CLOSE_SELL_LAYERS")
+   {
+      ObjectSetInteger(0,sparam,OBJPROP_STATE,false);
+      DoCloseLayersByCount(POSITION_TYPE_SELL,"SELL",false);
       return;
    }
 }
