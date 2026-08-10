@@ -3,35 +3,34 @@ indicator("EzyMap Pro V1", shorttitle="EzyMap Pro", overlay=true, max_bars_back=
 
 //==================================================================================================
 // EZYMAP PRO V1
-// Built from v4.7.0 (session filter, volatility regime filter, same-zone loss
-// cooldown, trailing-after-BE) with the CMP-touch LIVE-release stability fix
-// from the v4.5.12 rebuild folded in, plus a new dual-direction READY engine:
+// Built directly on v4.7.0 — same READY/LIVE mapping, same touch mechanism
+// (bar-range overlap + touch latch, committed on the confirmed candle close),
+// same TP/SL/BE and trailing-after-BE, same session/volatility/cooldown
+// filters (G7/G8), all unchanged. Five specific changes on top:
 //
-// 1) LIVE release is CMP-based, not bar-range-based. Touch, plan and release
-//    all evaluate together on the confirmed candle close, so a wick that
-//    already reversed can never release LIVE, and a touch can never be
-//    latched across bars and fired later at a stale price. See the "CMP
-//    approach and confirmed touch" section for the mechanism.
-// 2) BUY and SELL can be READY at the same time. Trend-following stays on the
-//    near HIGH RISK zone (S1 for BUY in a bullish bias, R1 for SELL in a
-//    bearish bias); counter-trend now arms on the far LOW RISK zone instead
-//    (S2 / R2) rather than sharing the trend zone. Both confluence
-//    requirements are unified to 1 — trend and counter-trend no longer differ,
-//    and counter-trend no longer requires a mandatory sweep/reclaim or
-//    displacement CHOCH on top of that.
-// 3) Only one trade can be ACTIVE at a time. Whichever side (BUY or SELL)
-//    is touched with a valid plan first is released LIVE; the opposite side
-//    keeps running its full normal lifecycle (approach, touch, invalidation,
-//    expiry) the whole time the first trade is active, but is blocked from
-//    committing to ACTIVE until that trade resolves (TP/SL/BE). If it is
-//    still genuinely touched the moment the block clears, it releases
-//    immediately at the current price — never at a stale, older touch price.
-//    A direction cannot re-arm a fresh READY zone while its own trade is
-//    already the one that's ACTIVE.
+// 1) BUY and SELL can be independently READY at the same time instead of one
+//    exclusive slot picking a winner. Trend-following still uses the near
+//    HIGH RISK zone (S1 for BUY, R1 for SELL), exactly as v4.7.0 always did.
+//    Counter-trend now uses the far LOW RISK zone (S2 / R2) instead of
+//    sharing the trend zone. Whichever side CMP touches first releases LIVE.
+// 2) Confluence count is no longer a pass/fail gate anywhere — not for READY
+//    arming, not for the LIVE release. CMP touching an armed zone (with a
+//    valid confirmation event and a valid TP/SL plan, exactly as v4.7.0
+//    already required) is enough on its own.
+// 3) Confluence is still calculated exactly as before and still drives the
+//    trade card's CONFIDENCE label — it's informational now, not a filter.
+// 4) TP, SL, BE and the trailing-after-BE stop are unchanged from v4.7.0.
+// 5) Only one trade can be ACTIVE. A direction cannot re-arm a fresh READY
+//    zone while its own trade is the one currently active. The opposite
+//    direction's already-armed zone keeps existing and updates with the map
+//    exactly as v4.7.0 always did (resync/invalidate on real structure
+//    changes) — it simply cannot commit to ACTIVE until the current trade
+//    hits TP, SL or BE.
 //
-// v4.7.0's four filters (session window, volatility regime, same-zone loss
-// cooldown, trailing stop after break-even) are preserved unchanged and now
-// apply to whichever side attempts to release LIVE.
+// Everything else — CHOCH/rejection/sweep/displacement confirmation, the
+// counter-trend reversal-quality requirement (completed sweep/reclaim or
+// displacement CHOCH), EMA regime, VWAP, MTF clustering, the 33-marker
+// ledger — is v4.7.0, unchanged.
 //==================================================================================================
 
 //--------------------------------------------------------------------------------------------------
@@ -54,23 +53,14 @@ float levelDistinctPips=input.float(10.0,"Minimum Level Separation",minval=1.0,m
 int entryPivotBars=input.int(1,"Entry CHoCH Swing Bars",minval=1,maxval=5,group=G2,display=display.none)
 bool requireDirectionalBody=input.bool(false,"Require Directional Confirmation Body",group=G2,display=display.none)
 float rejectionWickRatio=input.float(0.25,"Rejection Wick / Body Ratio",minval=0.20,maxval=3.0,step=0.05,group=G2,display=display.none)
-// Unified in Pro V1: trend and counter-trend both need only 1 confluence.
-const int MIN_CONFLUENCES=1
+// Pro V1: confluence count no longer gates arming or LIVE release (see the
+// header block) — it is calculated and shown on the trade card as CONFIDENCE
+// only, so the old trend/counter-trend minimum-confluence thresholds are gone.
 int armedExpiryEntryBars=input.int(60,"READY Expiry (Entry bars)",minval=3,maxval=60,group=G2,display=display.none)
 float confluenceTolerancePips=input.float(70.0,"Confluence Tolerance",minval=5.0,maxval=200.0,step=5.0,group=G2,display=display.none)
 bool useMtfLevelCluster=input.bool(true,"Use Multi-Timeframe Level Cluster",group=G2,display=display.none)
 bool useSweepReclaim=input.bool(true,"Use Completed Liquidity Sweep + Reclaim",group=G2,display=display.none)
 int sweepLookbackBars=input.int(5,"Liquidity Sweep Lookback",minval=2,maxval=12,group=G2,display=display.none)
-
-// LIVE release discipline (from the v4.5.12 stability rebuild).
-// A READY entry rectangle is only accepted when it sits at least this far
-// away from CMP, so every LIVE signal is preceded by a real approach into
-// the zone instead of arming on top of price already there.
-float readyApproachPips=input.float(8.0,"Minimum READY Approach Distance",minval=1.0,maxval=200.0,step=1.0,group=G2,display=display.none)
-// CMP must still be at the entry rectangle when LIVE is released. If price
-// has already run past the rectangle by more than this, the setup is
-// dropped rather than released at a stale price.
-float liveMaxSlippagePips=input.float(15.0,"Maximum LIVE Entry Slippage",minval=1.0,maxval=300.0,step=1.0,group=G2,display=display.none)
 
 // Premium additions. All are additive quality evidence; none is a global hard filter.
 bool useSessionDayLiquidity=input.bool(true,"Use Session / Previous-Day Sweep + Reclaim",group=G2,display=display.none)
@@ -170,32 +160,30 @@ color premiumFrameColor=color.rgb(66,75,86)
 color premiumTextColor=color.rgb(239,243,247)
 
 //--------------------------------------------------------------------------------------------------
-// Pro V1 engine guarantees
+// v4.5.11 stable historical-marker guarantees
 //--------------------------------------------------------------------------------------------------
-// • Map drawings, zone sizes, TP/SL maths, dashboard and trade-card layout are preserved from v4.7.0.
+// • v4.5.2 timeframe routing, map drawings, zone sizes, TP/SL, dashboard and alerts are preserved.
+// • The proven v4.5.2 drawing, READY/LIVE, marker, dashboard and timeframe-routing behavior is preserved.
 // • Previous-day / Asian / London sweep-reclaim, EMA13 slope + EMA50 regime,
-//   displacement CHOCH and daily VWAP remain additive quality evidence.
-// • BUY and SELL can be independently READY at the same time. Trend-following
-//   uses the near HIGH RISK zone; counter-trend uses the far LOW RISK zone.
-//   Both need only 1 confluence and the same confirmation set — counter-trend
-//   no longer requires a mandatory sweep/reclaim or displacement CHOCH.
-// • Only one trade can be ACTIVE. A direction cannot re-arm while its own
-//   trade is the one currently active; the opposite direction keeps running
-//   its full lifecycle and can release the moment the active trade resolves.
-// • Counter-trend READY setups stay frozen against bias-only invalidation —
-//   only the zone, expiry and retest rules manage them, same as v4.7.0.
-// • LIVE triggers on CMP reaching the entry rectangle's confirmed close, not
-//   the bar's HIGH/LOW range — touch, plan and release evaluate together so a
-//   touch can never be latched across bars and released later at a stale price.
+//   displacement CHOCH and daily VWAP are additive quality evidence.
+// • Premium liquidity reclaim and displacement CHOCH can also provide fresh confirmation,
+//   increasing opportunities without making all five additions compulsory.
+// • Counter-trend setups require completed sweep-reclaim or displacement-quality CHOCH.
 // • Historical markers remain timestamp-anchored to avoid TradingView's 10,000-bar limit.
-// • Break-even arms after the timeframe-scaled favorable move; once armed the
-//   stop trails by an ATR multiple instead of only guaranteeing flat-at-entry.
-// • The BUY/SELL marker is committed once, at the LIVE lock itself, independent
-//   of enableAlerts/alertLive — not gated behind the alert() call executing.
+// • Break-even arms after the timeframe-scaled favorable move and exits at entry on a later reclaim.
+// • READY, ACTIVE, TP, SL and BE alerts use the EZYMAP • SCALP MASTERY templates.
+// • LIVE is committed only on the completed chart candle; chart and alert use the same snapshot.
+// • Realtime LIVE markers are stored only after the matching alert() call executes.
+// • Historical markers are reconstructed independently and never generate alerts.
 // • A single permanent ledger keeps the newest 33 BUY/SELL markers stable.
 // • Marker labels are created once and are not deleted/rebuilt on every live tick.
 // • Historical bars never update alert deduplication keys.
 // • The engine resets simulated historical trade state before realtime monitoring begins.
+//--------------------------------------------------------------------------------------------------
+// Pro V1 additions on top of all of the above (see the header block):
+// dual independent BUY/SELL READY slots, LOW RISK zone for counter-trend,
+// and confluence count no longer gates arming or LIVE release — it is
+// display-only (the CONFIDENCE field). Every guarantee above still holds.
 //--------------------------------------------------------------------------------------------------
 
 //--------------------------------------------------------------------------------------------------
@@ -238,20 +226,23 @@ f_overlap(float lo,float hi,float zoneLo,float zoneHi)=>not na(lo) and not na(hi
 f_confidence_label(int confluences)=>
     confluences>=7?"QUALITY":confluences>=4?"GOOD":"STANDARD"
 
-// LIVE entry price at the exact moment CMP reaches the entry rectangle.
-// BUY approaches the rectangle from above, SELL from below, so the first price
-// actually available inside the rectangle is:
-//   CMP inside the rectangle          -> CMP itself
-//   CMP still at the approach edge     -> that edge
-//   CMP gapped straight through        -> the edge it entered from
-// The result is therefore always the live price, or the nearest realistic fill,
-// never a stale open or a price the market has already left behind.
-f_live_entry(bool isBuy,float zoneLo,float zoneHi,float livePrice)=>
-    float result=livePrice
-    if isBuy
-        result:=livePrice>zoneHi?zoneHi:livePrice<zoneLo?zoneHi:livePrice
+// First-touch proxy for historical bars and live ticks.
+// Open inside zone -> open.
+// Approach from above -> upper edge.
+// Approach from below -> lower edge.
+// Live price inside zone -> current live price.
+f_touch_entry(float zoneLo,float zoneHi,float previousClose,float barOpen,float livePrice)=>
+    float result=na
+    if barOpen>=zoneLo and barOpen<=zoneHi
+        result:=barOpen
+    else if livePrice>=zoneLo and livePrice<=zoneHi
+        result:=livePrice
+    else if previousClose>zoneHi
+        result:=zoneHi
+    else if previousClose<zoneLo
+        result:=zoneLo
     else
-        result:=livePrice<zoneLo?zoneLo:livePrice>zoneHi?zoneLo:livePrice
+        result:=math.min(math.max(livePrice,zoneLo),zoneHi)
     math.round_to_mintick(result)
 f_near(float a,float b,float tolerance)=>not na(a) and not na(b) and math.abs(a-b)<=tolerance
 f_clamp(float value,float minimum,float maximum)=>math.max(minimum,math.min(maximum,value))
@@ -506,79 +497,6 @@ f_nearest_below4(float reference,float a,float b,float c,float d)=>
     result
 
 //--------------------------------------------------------------------------------------------------
-// Trade plan builders
-//--------------------------------------------------------------------------------------------------
-// The plan is a pure function of the armed geometry (from the v4.5.12
-// stability rebuild), which lets READY be validated while it waits and lets
-// the touch and the release happen in the same evaluation — no plan is ever
-// built from a stored, possibly stale touch.
-
-// Structure plan: SL behind the entry rectangle and in front of the next S&R,
-// TP in front of the opposing S&R, bounded by the mode target band and R:R rules.
-f_structure_plan(bool isBuy,float entryPrice,float rectLo,float rectHi,float s1,float s2,float r1,float r2,float swingLow,float swingHigh,float trendSupport,float trendResistance,float snrBuffer,float stopDistance,float targetDistance,float minTarget,float maxTarget,float minRR,float maxRR)=>
-    float planSL=na
-    float planTP=na
-    float planRR=na
-
-    if isBuy
-        float baseSL=math.round_to_mintick(rectLo-stopDistance)
-        float freshSupport=f_nearest_below4(rectLo-snrBuffer,s1,s2,swingLow,trendSupport)
-        float protectedSL=not na(freshSupport)?math.round_to_mintick(freshSupport+snrBuffer):baseSL
-        planSL:=math.max(baseSL,protectedSL)
-
-        if planSL<entryPrice
-            float riskDistance=entryPrice-planSL
-            float desiredReward=f_clamp(math.max(targetDistance,riskDistance*1.5),minTarget,maxTarget)
-            desiredReward:=math.min(desiredReward,riskDistance*maxRR)
-            float freshResistance=f_nearest_above4(entryPrice,r1,r2,swingHigh,trendResistance)
-            float availableReward=not na(freshResistance)?freshResistance-snrBuffer-entryPrice:desiredReward
-            float rewardDistance=math.min(desiredReward,availableReward)
-            planTP:=rewardDistance>=riskDistance*minRR?math.round_to_mintick(entryPrice+rewardDistance):na
-            planRR:=not na(planTP)?(planTP-entryPrice)/riskDistance:na
-    else
-        float baseSL=math.round_to_mintick(rectHi+stopDistance)
-        float freshResistance=f_nearest_above4(rectHi+snrBuffer,r1,r2,swingHigh,trendResistance)
-        float protectedSL=not na(freshResistance)?math.round_to_mintick(freshResistance-snrBuffer):baseSL
-        planSL:=math.min(baseSL,protectedSL)
-
-        if planSL>entryPrice
-            float riskDistance=planSL-entryPrice
-            float desiredReward=f_clamp(math.max(targetDistance,riskDistance*1.5),minTarget,maxTarget)
-            desiredReward:=math.min(desiredReward,riskDistance*maxRR)
-            float freshSupport=f_nearest_below4(entryPrice,s1,s2,swingLow,trendSupport)
-            float availableReward=not na(freshSupport)?entryPrice-(freshSupport+snrBuffer):desiredReward
-            float rewardDistance=math.min(desiredReward,availableReward)
-            planTP:=rewardDistance>=riskDistance*minRR?math.round_to_mintick(entryPrice-rewardDistance):na
-            planRR:=not na(planTP)?(entryPrice-planTP)/riskDistance:na
-
-    [planSL,planTP,planRR]
-
-// Bounded ATR/risk fallback used when the structure plan cannot be built.
-f_fallback_plan(bool isBuy,float entryPrice,float stopDistance,float targetDistance,float minTarget,float maxTarget,float minRR,float maxRR)=>
-    float fallbackRisk=math.max(stopDistance,minTarget/maxRR)
-    float rewardFloor=fallbackRisk*minRR
-    float rewardCeiling=math.max(rewardFloor,math.min(maxTarget,fallbackRisk*maxRR))
-    float fallbackReward=f_clamp(math.max(targetDistance,minTarget),rewardFloor,rewardCeiling)
-    float planSL=isBuy?math.round_to_mintick(entryPrice-fallbackRisk):math.round_to_mintick(entryPrice+fallbackRisk)
-    float planTP=isBuy?math.round_to_mintick(entryPrice+fallbackReward):math.round_to_mintick(entryPrice-fallbackReward)
-    [planSL,planTP,fallbackReward/fallbackRisk]
-
-// Structure plan first, bounded fallback second, and a single releasable flag.
-f_resolve_plan(bool isBuy,float entryPrice,float rectLo,float rectHi,float s1,float s2,float r1,float r2,float swingLow,float swingHigh,float trendSupport,float trendResistance,float snrBuffer,float stopDistance,float targetDistance,float minTarget,float maxTarget,float minRR,float maxRR)=>
-    [structureSL,structureTP,structureRR]=f_structure_plan(isBuy,entryPrice,rectLo,rectHi,s1,s2,r1,r2,swingLow,swingHigh,trendSupport,trendResistance,snrBuffer,stopDistance,targetDistance,minTarget,maxTarget,minRR,maxRR)
-    bool structureValid=not na(structureSL) and not na(structureTP) and not na(structureRR) and structureRR>=minRR and structureRR<=maxRR+0.0001
-
-    [fallbackSL,fallbackTP,fallbackRR]=f_fallback_plan(isBuy,entryPrice,stopDistance,targetDistance,minTarget,maxTarget,minRR,maxRR)
-
-    float resolvedSL=structureValid?structureSL:fallbackSL
-    float resolvedTP=structureValid?structureTP:fallbackTP
-    float resolvedRR=structureValid?structureRR:fallbackRR
-    bool sidesCorrect=isBuy?(resolvedSL<entryPrice and resolvedTP>entryPrice):(resolvedSL>entryPrice and resolvedTP<entryPrice)
-    bool releasable=not na(entryPrice) and not na(resolvedSL) and not na(resolvedTP) and not na(resolvedRR) and resolvedRR>=minRR and resolvedRR<=maxRR+0.0001 and sidesCorrect
-
-    [resolvedSL,resolvedTP,resolvedRR,releasable]
-
-//--------------------------------------------------------------------------------------------------
 // Gold / BTC pip and round-number engine
 //--------------------------------------------------------------------------------------------------
 string symbolKey=str.upper(syminfo.ticker+" "+syminfo.root+" "+syminfo.description)
@@ -753,12 +671,11 @@ bool counterTrendSellRoute=bullishBias and entryBearishBias
 [sellLowLo,sellLowHi,sellLowTime]=f_support_zone(R2,supportHighs,supportLows,supportTimes)
 
 // Pro V1 dual-direction routing. Trend-following stays on the near HIGH RISK
-// zone (S1 for BUY, R1 for SELL) exactly as before. Counter-trend now arms on
-// the far LOW RISK zone (S2 for BUY, R2 for SELL) instead of sharing the
-// trend zone, so a genuine counter-trend fade needs a more significant level
-// rather than the same shallow pocket the trend side is already using. Both
-// sides are evaluated every bar regardless of which one (if either) is
-// currently armed, since either can be independently READY at the same time.
+// zone (S1 for BUY, R1 for SELL) exactly as v4.7.0 always used. Counter-trend
+// now arms on the far LOW RISK zone (S2 for BUY, R2 for SELL) instead of
+// sharing the trend zone. Both sides are evaluated every bar regardless of
+// which one (if either) is currently armed, since either can be
+// independently READY at the same time.
 bool buyIsCounterTrend=counterTrendBuyRoute and not trendBuyRoute
 bool sellIsCounterTrend=counterTrendSellRoute and not trendSellRoute
 bool allowBuy=trendBuyRoute or buyIsCounterTrend
@@ -952,6 +869,9 @@ if freshEntryClose
 // fresh READY zone while its own trade is the one currently ACTIVE, but the
 // opposite direction keeps arming, resyncing, touching and expiring normally
 // throughout — it simply cannot commit to ACTIVE until liveTradeLocked clears.
+// Touch, latch and commit mechanics are otherwise byte-for-byte v4.7.0,
+// duplicated per side; confluence is calculated the same way but no longer
+// gates arming or the LIVE commit.
 varip string state="MONITORING"
 
 varip string armedBuySetupId=""
@@ -977,8 +897,8 @@ varip float armedBuyEntryLo=na
 varip float armedBuyEntryHi=na
 varip int armedBuyEntryTime=na
 varip string armedBuyExtraReasons=""
-varip bool armedBuyPending=false
-varip int armedBuyPendingBar=na
+varip bool armedBuyTouchLatched=false
+varip float armedBuyTouchPrice=na
 
 varip string armedSellSetupId=""
 varip bool armedSellArmed=false
@@ -1003,8 +923,8 @@ varip float armedSellEntryLo=na
 varip float armedSellEntryHi=na
 varip int armedSellEntryTime=na
 varip string armedSellExtraReasons=""
-varip bool armedSellPending=false
-varip int armedSellPendingBar=na
+varip bool armedSellTouchLatched=false
+varip float armedSellTouchPrice=na
 
 // Immutable LIVE trade snapshot. These fields are written once when LIVE starts
 // and cannot be changed by later direction/support/entry candle closes.
@@ -1076,9 +996,7 @@ var array<label> permanentMarkerLabels=array.new_label()
 var label currentLiveSignalMarker=na
 
 bool armedBuyEvent=false
-bool armedBuyResyncEvent=false
 bool armedSellEvent=false
-bool armedSellResyncEvent=false
 bool liveEvent=false
 bool realtimeLiveEvent=false
 bool tpEvent=false
@@ -1124,42 +1042,24 @@ bool bearishAnySweepInSellZone=bearishSweepInSellZone or bearishPremiumSweepInSe
 
 // Rejection keeps the original frequency. Premium sweep-reclaim and displacement
 // CHOCH create additional valid confirmation paths instead of acting as hard filters.
-// Pro V1: counter-trend no longer requires a mandatory sweep/reclaim or
-// displacement CHOCH on top of this — the same confirmation set now applies
-// to both trend and counter-trend routes.
 bool bullishArmedConfirmation=bullishRecentRejection or bullishAnySweepInBuyZone or bullishDisplacementInBuyZone
 bool bearishArmedConfirmation=bearishRecentRejection or bearishAnySweepInSellZone or bearishDisplacementInSellZone
 
 string bullishConfirmationName=bullishPremiumSweepInBuyZone?"SESSION / PREVIOUS-DAY SWEEP + RECLAIM":bullishSweepInBuyZone?"LIQUIDITY SWEEP + RECLAIM":bullishDisplacementInBuyZone?"DISPLACEMENT CHOCH":bullishRecentRejection?"ENTRY ZONE REJECTION":""
 string bearishConfirmationName=bearishPremiumSweepInSellZone?"SESSION / PREVIOUS-DAY SWEEP + RECLAIM":bearishSweepInSellZone?"LIQUIDITY SWEEP + RECLAIM":bearishDisplacementInSellZone?"DISPLACEMENT CHOCH":bearishRecentRejection?"ENTRY ZONE REJECTION":""
 
+// Confluence is still calculated exactly as before (base level + BRN/EMA/
+// trend/fib/MTF/sweep/displacement/EMA-regime/EMA-slope/VWAP evidence). Pro
+// V1 no longer gates arming or LIVE release on it — it only feeds the
+// trade-card CONFIDENCE label further below.
 int buySelectedConfluences=f_confluence_count(buySelectedLo,buySelectedHi,buySelectedLevel,supportEMA,supportTrendSupport,buyFib50,buyFib618,brnStep,microBrnStep,confluenceTolerance,buyMtfCluster,bullishSweepInBuyZone,bullishPremiumSweepInBuyZone,bullishDisplacementInBuyZone,buyEmaSlopeConfluence,buyEmaRegimeConfluence,buyVWAPConfluence)
 int sellSelectedConfluences=f_confluence_count(sellSelectedLo,sellSelectedHi,sellSelectedLevel,supportEMA,supportTrendResistance,sellFib50,sellFib618,brnStep,microBrnStep,confluenceTolerance,sellMtfCluster,bearishSweepInSellZone,bearishPremiumSweepInSellZone,bearishDisplacementInSellZone,sellEmaSlopeConfluence,sellEmaRegimeConfluence,sellVWAPConfluence)
 
-// LIVE release discipline (from the v4.5.12 stability rebuild).
-// A READY entry rectangle is only accepted when it sits a real approach
-// distance away from CMP, so every LIVE signal is preceded by a genuine
-// approach into the zone instead of arming on top of price already there.
-float readySideBuffer=math.max(readyApproachPips*pipSize,nz(chartATR,0.0)*0.10,syminfo.mintick*2.0)
-// Tolerance for treating CMP as having reached the rectangle edge.
-float touchTolerance=math.max(pipSize*0.5,syminfo.mintick)
-// CMP must still be at the rectangle when LIVE is released.
-float liveMaxSlippage=math.max(liveMaxSlippagePips*pipSize,nz(chartATR,0.0)*0.15)
-float zoneSyncTolerance=syminfo.mintick
-float invalidationBuffer=math.max(pipSize*5.0,syminfo.mintick*2.0)
-int armedClock=barstate.isrealtime?timenow:time_close
-float snrBuffer=snrFrontRunPips*pipSize
-float volatilityStopDistance=math.max(stopBufferPips*pipSize,nz(chartATR,targetMinimumDistance)*stopATRMultiplier)
-float volatilityTargetDistance=nz(chartATR,targetMinimumDistance)*targetATRMultiplier
-
-// v4.7.0 LIVE-stage filters, unchanged, now evaluated for whichever side
-// attempts to release. Session and volatility are direction-agnostic.
-bool sessionFilterOk=not useSessionFilter or not na(time(timeframe.period,tradingSessionWindow,sessionFilterTimezone))
-bool volatilityFilterOk=not useVolatilityFilter or (volAtrRatio>=volMinRatio and volAtrRatio<=volMaxRatio)
-int lossCooldownMs=lossCooldownMinutes*60000
+// READY entry rectangles stay entirely below CMP for BUY and above CMP for SELL.
+float readySideBuffer=syminfo.mintick
 
 //--------------------------------------------------------------------------------------------------
-// BUY slot — arm, resync, invalidate, touch, plan, release
+// BUY slot — arm, resync, invalidate, touch, plan, release (v4.7.0 mechanics)
 //--------------------------------------------------------------------------------------------------
 // A direction cannot start a fresh READY zone while its own trade is the one
 // currently ACTIVE. The opposite direction is never gated here.
@@ -1168,9 +1068,13 @@ bool buyArmEligible=freshEntryClose and not armedBuyArmed and not (liveTradeLock
 if buyArmEligible
     int buyRetests=f_zone_retest_count(buySelectedLo,buySelectedHi,buySelectedTime,entryCandleTime,supportSeconds,entryHighs,entryLows,entryTimes)
     bool buyRetestValid=buyRetests<=MAXIMUM_ZONE_RETESTS
-    bool buyConfirmationValid=allowBuy and bullishArmedConfirmation
+    // Counter-trend still requires a completed sweep/reclaim or
+    // displacement-quality CHOCH on top of the base confirmation (unchanged
+    // from v4.7.0). Confluence count is no longer required.
+    bool buyReversalValid=not buyIsCounterTrend or bullishDisplacementInBuyZone or bullishAnySweepInBuyZone
+    bool buyConfirmationValid=allowBuy and bullishArmedConfirmation and buyReversalValid
     [buyEntryLo,buyEntryHi,buyEntryTime]=f_select_full_entry_candle(buySelectedLo,buySelectedHi,close,true,readySideBuffer,entryHighs,entryLows,entryTimes)
-    bool buyCandidate=buyConfirmationValid and not na(buyEntryLo) and buyEntryHi>buyEntryLo and buyRetestValid and buySelectedConfluences>=MIN_CONFLUENCES
+    bool buyCandidate=buyConfirmationValid and not na(buyEntryLo) and buyEntryHi>buyEntryLo and buyRetestValid
 
     if buyCandidate
         armedBuyArmed:=true
@@ -1195,24 +1099,22 @@ if buyArmEligible
         armedBuyEntryTime:=buyEntryTime
         armedBuyAtClock:=barstate.isrealtime?timenow:time_close
         armedBuySetupId:="BUY-"+str.tostring(buyEntryTime)+"-"+str.tostring(bar_index)
-        armedBuyPending:=false
-        armedBuyPendingBar:=na
+        armedBuyTouchLatched:=false
+        armedBuyTouchPrice:=na
         armedBuyEvent:=true
 
 // The supporting map can recalculate while READY is waiting, and the bias can
 // flip which zone (HIGH vs LOW RISK) this direction should be using. Resync
 // keeps the armed rectangle anchored to whatever is currently the correct zone.
-bool buyZoneChanged=armedBuyArmed and (na(armedBuySupportLo) or na(armedBuySupportHi) or math.abs(buySelectedLo-armedBuySupportLo)>zoneSyncTolerance or math.abs(buySelectedHi-armedBuySupportHi)>zoneSyncTolerance)
+bool buyZoneChanged=armedBuyArmed and (na(armedBuySupportLo) or na(armedBuySupportHi) or math.abs(buySelectedLo-armedBuySupportLo)>syminfo.mintick or math.abs(buySelectedHi-armedBuySupportHi)>syminfo.mintick)
 
 if buyZoneChanged
     [syncedBuyEntryLo,syncedBuyEntryHi,syncedBuyEntryTime]=f_select_full_entry_candle(buySelectedLo,buySelectedHi,close,true,readySideBuffer,entryHighs,entryLows,entryTimes)
     int syncedBuyRetests=f_zone_retest_count(buySelectedLo,buySelectedHi,buySelectedTime,entryCandleTime,supportSeconds,entryHighs,entryLows,entryTimes)
-    bool syncedBuyCandidateValid=not na(syncedBuyEntryLo) and not na(syncedBuyEntryHi) and syncedBuyEntryHi>syncedBuyEntryLo and allowBuy and bullishArmedConfirmation and syncedBuyRetests<=MAXIMUM_ZONE_RETESTS and buySelectedConfluences>=MIN_CONFLUENCES
+    bool syncedBuyReversalValid=not buyIsCounterTrend or bullishDisplacementInBuyZone or bullishAnySweepInBuyZone
+    bool syncedBuyCandidateValid=not na(syncedBuyEntryLo) and not na(syncedBuyEntryHi) and syncedBuyEntryHi>syncedBuyEntryLo and allowBuy and bullishArmedConfirmation and syncedBuyReversalValid and syncedBuyRetests<=MAXIMUM_ZONE_RETESTS
 
     if syncedBuyCandidateValid
-        // Only reset the approach gate when the rectangle itself actually moved.
-        bool buyRectangleMoved=na(armedBuyEntryLo) or na(armedBuyEntryHi) or math.abs(syncedBuyEntryLo-armedBuyEntryLo)>zoneSyncTolerance or math.abs(syncedBuyEntryHi-armedBuyEntryHi)>zoneSyncTolerance
-
         armedBuySupportLo:=buySelectedLo
         armedBuySupportHi:=buySelectedHi
         armedBuyEntryLo:=syncedBuyEntryLo
@@ -1231,14 +1133,16 @@ if buyZoneChanged
         armedBuyRisk:=buySelectedRisk
         armedBuyConfirmation:=bullishConfirmationName
         armedBuyCounterTrend:=buyIsCounterTrend
-        // Keep the original READY candle and the original arming clock and
-        // setup ID stable across cosmetic drift, so expiry keeps counting from
-        // the real arm time and any READY alert dedup key stays meaningful.
-        if buyRectangleMoved
-            armedBuyPending:=false
-            armedBuyPendingBar:=na
-        armedBuyResyncEvent:=true
+        // Keep the original READY candle for LIVE eligibility.
+        // Only the entry rectangle/map data is synchronized here.
+        armedBuyAtClock:=barstate.isrealtime?timenow:time_close
+        armedBuySetupId:="BUY-"+str.tostring(syncedBuyEntryTime)+"-"+str.tostring(bar_index)
+        armedBuyTouchLatched:=false
+        armedBuyTouchPrice:=na
+        armedBuyEvent:=true
     else
+        // No valid full candle exists inside the currently drawn risk box.
+        // Remove the stale READY signal and wait for a fresh valid setup.
         armedBuyArmed:=false
         armedBuySetupId:=""
         armedBuyRisk:=""
@@ -1259,10 +1163,10 @@ if buyZoneChanged
         armedBuyEntryLo:=na
         armedBuyEntryHi:=na
         armedBuyEntryTime:=na
-        armedBuyPending:=false
-        armedBuyPendingBar:=na
+        armedBuyTouchLatched:=false
+        armedBuyTouchPrice:=na
 
-if armedBuyEvent or armedBuyResyncEvent
+if armedBuyEvent
     float armedBuyMid=(armedBuySupportLo+armedBuySupportHi)/2.0
     bool buyReasonBRN=f_near_round(armedBuyMid,brnStep,confluenceTolerance)
     bool buyReasonMicro=not buyReasonBRN and f_near_round(armedBuyMid,microBrnStep,confluenceTolerance)
@@ -1299,13 +1203,14 @@ if armedBuyEvent or armedBuyResyncEvent
     if buyReasonFib
         armedBuyExtraReasons:=armedBuyExtraReasons+"\nFIBONACCI CONFLUENCE"
 
+float invalidationBuffer=math.max(pipSize*5.0,syminfo.mintick*2.0)
+int armedClock=barstate.isrealtime?timenow:time_close
 bool buyExpired=armedBuyArmed and not na(armedBuyAtClock) and armedClock-armedBuyAtClock>armedExpiryEntryBars*entrySeconds*1000.0
-// Counter-trend READY setups are frozen against bias flips (matches v4.7.0):
-// once armed as counter-trend, only the zone, expiry and retest rules manage
-// them. A trend-armed setup still invalidates if the trend route breaks, so
-// it re-arms fresh under the correct classification rather than silently
-// drifting into a counter-trend zone.
-bool buyBiasInvalid=armedBuyArmed and not armedBuyCounterTrend and not trendBuyRoute
+// Counter-trend READY setups are frozen: once armed as counter-trend, only
+// the zone, expiry and retest rules manage them (unchanged from v4.7.0). A
+// trend-armed setup still invalidates if the trend route breaks.
+bool buyTrendRouteInvalid=armedBuyArmed and not armedBuyCounterTrend and not trendBuyRoute
+bool buyBiasInvalid=buyTrendRouteInvalid
 bool buyZoneInvalid=armedBuyArmed and close<armedBuySupportLo-invalidationBuffer
 
 bool buySupportTouched=armedBuyArmed and f_overlap(low,high,armedBuySupportLo,armedBuySupportHi)
@@ -1313,52 +1218,104 @@ if armedBuyArmed and not buySupportTouched
     armedBuyZoneExited:=true
 bool buyRetestLimitInvalid=armedBuyArmed and armedBuyZoneExited and buySupportTouched and armedBuyZoneRetests>=MAXIMUM_ZONE_RETESTS
 
-// READY rectangle must remain completely inside the exact risk box currently
-// drawn on the chart, not only the zone frozen at initial arming.
-bool buyEntryOutsideVisibleRiskZone=armedBuyArmed and (na(buySelectedLo) or na(buySelectedHi) or na(armedBuyEntryLo) or na(armedBuyEntryHi) or armedBuyEntryLo<buySelectedLo-zoneSyncTolerance or armedBuyEntryHi>buySelectedHi+zoneSyncTolerance)
+// READY must remain pending on the correct side of CMP.
+// A genuine touch has priority and must transition to LIVE instead of being invalidated.
+bool armedBuyEntryTouchedNow=armedBuyArmed and f_overlap(low,high,armedBuyEntryLo,armedBuyEntryHi)
+bool buyEntrySideInvalid=armedBuyArmed and not armedBuyEntryTouchedNow and armedBuyEntryHi>=close-readySideBuffer
 
-// CMP approach and confirmed touch (from the v4.5.12 stability rebuild). LIVE
-// remains committed only on the confirmed chart candle, so CMP for touch
-// purposes is always that candle's settled close — a wick that reversed
-// within the bar is never reflected in its confirmed close.
-bool armedBuyRectangleValid=armedBuyArmed and not na(armedBuyAtBar) and not na(armedBuyEntryLo) and not na(armedBuyEntryHi) and armedBuyEntryHi>armedBuyEntryLo
-float cmpPrice=close
+// READY rectangle must remain completely inside the exact risk box
+// currently drawn on the chart, not only the zone frozen at initial arming.
+bool buyEntryOutsideVisibleRiskZone=armedBuyArmed and (na(buySelectedLo) or na(buySelectedHi) or na(armedBuyEntryLo) or na(armedBuyEntryHi) or armedBuyEntryLo<buySelectedLo-syminfo.mintick or armedBuyEntryHi>buySelectedHi+syminfo.mintick)
 
-bool buyOnApproachSide=armedBuyRectangleValid and cmpPrice>armedBuyEntryHi+readySideBuffer
-if buyOnApproachSide and not armedBuyPending
-    armedBuyPending:=true
-    armedBuyPendingBar:=bar_index
+// LIVE starts only from a completely later chart candle.
+// The original READY candle is preserved even when the visible map synchronizes.
+// Any later candle that actually overlaps the current frozen entry rectangle can trigger LIVE.
+bool buyTouchAfterArming=armedBuyArmed and not na(armedBuyAtBar) and bar_index>armedBuyAtBar
+bool buyFirstTouchNow=buyTouchAfterArming and armedBuyEntryTouchedNow and not armedBuyTouchLatched
 
-bool buyReachedRectangle=armedBuyRectangleValid and cmpPrice<=armedBuyEntryHi+touchTolerance
-bool buyTouchNow=armedBuyRectangleValid and armedBuyPending and barstate.isconfirmed and buyReachedRectangle
+if buyFirstTouchNow
+    armedBuyTouchLatched:=true
+    armedBuyTouchPrice:=f_touch_entry(armedBuyEntryLo,armedBuyEntryHi,close[1],open,close)
 
-// The entry-side rule only rejects a rectangle that sits on the wrong side of
-// CMP before any approach was ever observed — it can no longer fire on the
-// touch itself, which is what caused READY to flicker off and on in earlier
-// builds exactly as price arrived at the zone.
-bool buyEntrySideInvalid=armedBuyRectangleValid and not armedBuyPending and not buyTouchNow and armedBuyEntryLo>cmpPrice+touchTolerance
+// Before the first touch, normal READY invalidation still applies.
+// Once touched, the latched event has priority and cannot be erased by a later tick.
+bool buyReadyInvalidBeforeTouch=buyExpired or buyBiasInvalid or buyZoneInvalid or buyRetestLimitInvalid or buyEntrySideInvalid or buyEntryOutsideVisibleRiskZone
+if armedBuyArmed and not armedBuyTouchLatched and (buyReadyInvalidBeforeTouch or not chartMatchesSelected)
+    armedBuyArmed:=false
+    armedBuySetupId:=""
+    armedBuyRisk:=""
+    armedBuyConfirmation:=""
+    armedBuyExtraReasons:=""
+    armedBuyCounterTrend:=false
+    armedBuyMtfCluster:=false
+    armedBuySweepReclaim:=false
+    armedBuyPremiumLiquidity:=false
+    armedBuyDisplacementChoch:=false
+    armedBuyEmaSlope:=false
+    armedBuyEmaRegime:=false
+    armedBuyVWAP:=false
+    armedBuyAtClock:=na
+    armedBuyZoneRetests:=0
+    armedBuyZoneExited:=false
+    armedBuyEntryLo:=na
+    armedBuyEntryHi:=na
+    armedBuyTouchLatched:=false
+    armedBuyTouchPrice:=na
 
-bool buyReadyInvalid=buyExpired or buyBiasInvalid or buyZoneInvalid or buyRetestLimitInvalid or buyEntrySideInvalid or buyEntryOutsideVisibleRiskZone
+bool buyEntryTouched=armedBuyArmed and armedBuyTouchLatched
 
-// While READY waits, the plan is previewed from the rectangle edge CMP will
-// reach first, so a setup that can never produce a releasable plan is
-// dropped immediately instead of waiting and failing at the touch.
-float buyPreviewEntry=armedBuyRectangleValid?armedBuyEntryHi:na
-[buyPreviewSL,buyPreviewTP,buyPreviewRR,buyPreviewReleasable]=f_resolve_plan(true,buyPreviewEntry,armedBuyEntryLo,armedBuyEntryHi,S1,S2,R1,R2,supportSwingLow,supportSwingHigh,supportTrendSupport,supportTrendResistance,snrBuffer,volatilityStopDistance,volatilityTargetDistance,targetMinimumDistance,targetMaximumDistance,minimumRR,maximumRR)
-bool buyReadyPlanInvalid=armedBuyRectangleValid and not buyPreviewReleasable
+// Entry price is frozen at the first actual touch and cannot move or disappear.
+float buyPlannedEntry=buyEntryTouched?armedBuyTouchPrice:na
+float buyPlannedSL=na
+float buyPlannedTP=na
+float buyPlannedRR=na
+float snrBuffer=snrFrontRunPips*pipSize
+float volatilityStopDistance=math.max(stopBufferPips*pipSize,nz(chartATR,targetMinimumDistance)*stopATRMultiplier)
+float volatilityTargetDistance=nz(chartATR,targetMinimumDistance)*targetATRMultiplier
 
-// Entry is the confirmed close at this exact touch. Nothing is carried
-// between bars, so LIVE can never be released later at a stale price.
-float buyPlannedEntry=buyTouchNow?f_live_entry(true,armedBuyEntryLo,armedBuyEntryHi,cmpPrice):na
-bool buyEntryWithinSlippage=buyTouchNow and not na(buyPlannedEntry) and math.abs(buyPlannedEntry-cmpPrice)<=liveMaxSlippage
-[buyPlannedSL,buyPlannedTP,buyPlannedRR,buyPlanReleasable]=f_resolve_plan(true,buyPlannedEntry,armedBuyEntryLo,armedBuyEntryHi,S1,S2,R1,R2,supportSwingLow,supportSwingHigh,supportTrendSupport,supportTrendResistance,snrBuffer,volatilityStopDistance,volatilityTargetDistance,targetMinimumDistance,targetMaximumDistance,minimumRR,maximumRR)
+if buyEntryTouched and chartMatchesSelected
+    float buyBaseSL=math.round_to_mintick(armedBuyEntryLo-volatilityStopDistance)
+    float buyFreshSupport=f_nearest_below4(armedBuyEntryLo-snrBuffer,S1,S2,supportSwingLow,supportTrendSupport)
+    float buyProtectedSL=not na(buyFreshSupport)?math.round_to_mintick(buyFreshSupport+snrBuffer):buyBaseSL
+    buyPlannedSL:=math.max(buyBaseSL,buyProtectedSL)
 
-bool buyConfluenceValid=armedBuyConfluences>=MIN_CONFLUENCES
+    if buyPlannedSL<buyPlannedEntry
+        float buyRiskDistance=buyPlannedEntry-buyPlannedSL
+        float buyDesiredReward=f_clamp(math.max(volatilityTargetDistance,buyRiskDistance*1.5),targetMinimumDistance,targetMaximumDistance)
+        buyDesiredReward:=math.min(buyDesiredReward,buyRiskDistance*maximumRR)
+        float buyFreshResistance=f_nearest_above4(buyPlannedEntry,R1,R2,supportSwingHigh,supportTrendResistance)
+        float buyAvailableReward=not na(buyFreshResistance)?buyFreshResistance-snrBuffer-buyPlannedEntry:buyDesiredReward
+        float buyRewardDistance=math.min(buyDesiredReward,buyAvailableReward)
+        buyPlannedTP:=buyRewardDistance>=buyRiskDistance*minimumRR?math.round_to_mintick(buyPlannedEntry+buyRewardDistance):na
+        buyPlannedRR:=not na(buyPlannedTP)?(buyPlannedTP-buyPlannedEntry)/buyRiskDistance:na
+
+// A touched READY setup must always be released as LIVE.
+// When the structure-based TP/SL plan is unavailable, build a bounded
+// ATR/risk fallback instead of dropping the touch event.
+bool buyPrimaryPlanValid=buyEntryTouched and not na(buyPlannedEntry) and not na(buyPlannedSL) and not na(buyPlannedTP) and not na(buyPlannedRR) and buyPlannedRR>=minimumRR and buyPlannedRR<=maximumRR+0.0001
+
+if buyEntryTouched and not buyPrimaryPlanValid and not na(buyPlannedEntry)
+    float buyFallbackRisk=math.max(volatilityStopDistance,targetMinimumDistance/maximumRR)
+    float buyFallbackRewardFloor=buyFallbackRisk*minimumRR
+    float buyFallbackRewardCeiling=math.max(buyFallbackRewardFloor,math.min(targetMaximumDistance,buyFallbackRisk*maximumRR))
+    float buyFallbackReward=f_clamp(math.max(volatilityTargetDistance,targetMinimumDistance),buyFallbackRewardFloor,buyFallbackRewardCeiling)
+    buyPlannedSL:=math.round_to_mintick(buyPlannedEntry-buyFallbackRisk)
+    buyPlannedTP:=math.round_to_mintick(buyPlannedEntry+buyFallbackReward)
+    buyPlannedRR:=buyFallbackReward/buyFallbackRisk
+
+// v4.7.0 LIVE-stage filters, unchanged, now evaluated per side.
+bool sessionFilterOk=not useSessionFilter or not na(time(timeframe.period,tradingSessionWindow,sessionFilterTimezone))
+bool volatilityFilterOk=not useVolatilityFilter or (volAtrRatio>=volMinRatio and volAtrRatio<=volMaxRatio)
+int lossCooldownMs=lossCooldownMinutes*60000
+
+bool buyValidPlan=buyEntryTouched and not na(buyPlannedEntry) and not na(buyPlannedSL) and not na(buyPlannedTP) and not na(buyPlannedRR) and buyPlannedRR>=minimumRR and buyPlannedRR<=maximumRR+0.0001
 bool buyCooldownFilterOk=not (useLossCooldown and not na(lastLossZoneLo) and lastLossDirection=="BUY" and f_overlap(armedBuySupportLo,armedBuySupportHi,lastLossZoneLo,lastLossZoneHi) and (armedClock-lastLossClock)<lossCooldownMs)
-bool buyValidPlan=armedBuyArmed and chartMatchesSelected and buyTouchNow and buyEntryWithinSlippage and buyPlanReleasable and buyConfluenceValid and sessionFilterOk and volatilityFilterOk and buyCooldownFilterOk
-bool buyTouchRejected=buyTouchNow and not buyValidPlan
 
-if buyValidPlan and not liveTradeLocked
+// Commit LIVE only on the confirmed chart-timeframe close. The first touch is
+// already stored by the varip latch, so the alert, marker and trade card all
+// consume the same final immutable setup snapshot and cannot diverge after
+// TradingView recalculates the candle.
+if armedBuyArmed and buyValidPlan and sessionFilterOk and volatilityFilterOk and buyCooldownFilterOk and not liveTradeLocked and barstate.isconfirmed
     // Freeze the complete trade plan at the exact LIVE trigger.
     liveTradeLocked:=true
     activeSetupId:=armedBuySetupId
@@ -1384,18 +1341,19 @@ if buyValidPlan and not liveTradeLocked
     activeBreakEvenTriggerPips:=breakEvenTriggerPips
     activeBreakEvenTriggerPrice:=math.round_to_mintick(activeEntry+breakEvenTriggerDistance)
     float buyMarkerOffset=math.max(nz(chartATR,targetMinimumDistance)*0.20,pipSize*10.0)
-    activeMarkerPrice:=activeEntry-buyMarkerOffset
+    activeMarkerPrice:=low-buyMarkerOffset
 
-    bool buyMarkersEnabled=barstate.isrealtime?showMarkers:showBacktestMarkers
-    if buyMarkersEnabled and activeSetupId!="" and array.indexof(permanentMarkerSetupIds,activeSetupId)==-1
-        string buyMarkerTooltip=(barstate.isrealtime?"ALERT-SYNCED • ":"HISTORICAL RECONSTRUCTION • ")+"BUY"
-        label buyCommittedMarker=label.new(activeStartTime,activeMarkerPrice,"BUY",xloc=xloc.bar_time,yloc=yloc.price,style=label.style_label_up,color=buyColor,textcolor=premiumTextColor,size=size.small,tooltip=buyMarkerTooltip)
+    // Historical reconstruction creates a permanent marker immediately. It is
+    // visually identical to a normal BUY marker, while its tooltip states that
+    // no realtime alert was possible for the historical execution.
+    if not barstate.isrealtime and showBacktestMarkers and showMarkers and activeSetupId!="" and array.indexof(permanentMarkerSetupIds,activeSetupId)==-1
+        label buyHistoricalMarker=label.new(activeStartTime,activeMarkerPrice,"BUY",xloc=xloc.bar_time,yloc=yloc.price,style=label.style_label_up,color=buyColor,textcolor=premiumTextColor,size=size.small,tooltip="HISTORICAL RECONSTRUCTION • NO ALERT • BUY")
         array.push(permanentMarkerSetupIds,activeSetupId)
-        array.push(permanentMarkerLabels,buyCommittedMarker)
+        array.push(permanentMarkerLabels,buyHistoricalMarker)
         while array.size(permanentMarkerSetupIds)>MAX_HISTORICAL_MARKERS
             array.shift(permanentMarkerSetupIds)
-            label buyOldestMarker=array.shift(permanentMarkerLabels)
-            label.delete(buyOldestMarker)
+            label buyOldestHistoricalMarker=array.shift(permanentMarkerLabels)
+            label.delete(buyOldestHistoricalMarker)
 
     activeExit:=na
     activeResultPips:=na
@@ -1420,36 +1378,10 @@ if buyValidPlan and not liveTradeLocked
     armedBuyEntryLo:=na
     armedBuyEntryHi:=na
     armedBuyEntryTime:=na
-    armedBuyPending:=false
-    armedBuyPendingBar:=na
+    armedBuyTouchLatched:=false
+    armedBuyTouchPrice:=na
     liveEvent:=true
     realtimeLiveEvent:=barstate.isrealtime
-
-// Invalidation runs after the release attempt, so a setup released in this
-// evaluation is already ACTIVE and cannot be cleared here.
-if armedBuyArmed and (buyTouchRejected or buyReadyInvalid or buyReadyPlanInvalid or not chartMatchesSelected)
-    armedBuyArmed:=false
-    armedBuySetupId:=""
-    armedBuyRisk:=""
-    armedBuyConfirmation:=""
-    armedBuyExtraReasons:=""
-    armedBuyCounterTrend:=false
-    armedBuyMtfCluster:=false
-    armedBuySweepReclaim:=false
-    armedBuyPremiumLiquidity:=false
-    armedBuyDisplacementChoch:=false
-    armedBuyEmaSlope:=false
-    armedBuyEmaRegime:=false
-    armedBuyVWAP:=false
-    armedBuyAtBar:=na
-    armedBuyAtClock:=na
-    armedBuyZoneRetests:=0
-    armedBuyZoneExited:=false
-    armedBuyEntryLo:=na
-    armedBuyEntryHi:=na
-    armedBuyEntryTime:=na
-    armedBuyPending:=false
-    armedBuyPendingBar:=na
 
 //--------------------------------------------------------------------------------------------------
 // SELL slot — arm, resync, invalidate, touch, plan, release (mirrors BUY)
@@ -1459,9 +1391,10 @@ bool sellArmEligible=freshEntryClose and not armedSellArmed and not (liveTradeLo
 if sellArmEligible
     int sellRetests=f_zone_retest_count(sellSelectedLo,sellSelectedHi,sellSelectedTime,entryCandleTime,supportSeconds,entryHighs,entryLows,entryTimes)
     bool sellRetestValid=sellRetests<=MAXIMUM_ZONE_RETESTS
-    bool sellConfirmationValid=allowSell and bearishArmedConfirmation
+    bool sellReversalValid=not sellIsCounterTrend or bearishDisplacementInSellZone or bearishAnySweepInSellZone
+    bool sellConfirmationValid=allowSell and bearishArmedConfirmation and sellReversalValid
     [sellEntryLo,sellEntryHi,sellEntryTime]=f_select_full_entry_candle(sellSelectedLo,sellSelectedHi,close,false,readySideBuffer,entryHighs,entryLows,entryTimes)
-    bool sellCandidate=sellConfirmationValid and not na(sellEntryLo) and sellEntryHi>sellEntryLo and sellRetestValid and sellSelectedConfluences>=MIN_CONFLUENCES
+    bool sellCandidate=sellConfirmationValid and not na(sellEntryLo) and sellEntryHi>sellEntryLo and sellRetestValid
 
     if sellCandidate
         armedSellArmed:=true
@@ -1486,20 +1419,19 @@ if sellArmEligible
         armedSellEntryTime:=sellEntryTime
         armedSellAtClock:=barstate.isrealtime?timenow:time_close
         armedSellSetupId:="SELL-"+str.tostring(sellEntryTime)+"-"+str.tostring(bar_index)
-        armedSellPending:=false
-        armedSellPendingBar:=na
+        armedSellTouchLatched:=false
+        armedSellTouchPrice:=na
         armedSellEvent:=true
 
-bool sellZoneChanged=armedSellArmed and (na(armedSellSupportLo) or na(armedSellSupportHi) or math.abs(sellSelectedLo-armedSellSupportLo)>zoneSyncTolerance or math.abs(sellSelectedHi-armedSellSupportHi)>zoneSyncTolerance)
+bool sellZoneChanged=armedSellArmed and (na(armedSellSupportLo) or na(armedSellSupportHi) or math.abs(sellSelectedLo-armedSellSupportLo)>syminfo.mintick or math.abs(sellSelectedHi-armedSellSupportHi)>syminfo.mintick)
 
 if sellZoneChanged
     [syncedSellEntryLo,syncedSellEntryHi,syncedSellEntryTime]=f_select_full_entry_candle(sellSelectedLo,sellSelectedHi,close,false,readySideBuffer,entryHighs,entryLows,entryTimes)
     int syncedSellRetests=f_zone_retest_count(sellSelectedLo,sellSelectedHi,sellSelectedTime,entryCandleTime,supportSeconds,entryHighs,entryLows,entryTimes)
-    bool syncedSellCandidateValid=not na(syncedSellEntryLo) and not na(syncedSellEntryHi) and syncedSellEntryHi>syncedSellEntryLo and allowSell and bearishArmedConfirmation and syncedSellRetests<=MAXIMUM_ZONE_RETESTS and sellSelectedConfluences>=MIN_CONFLUENCES
+    bool syncedSellReversalValid=not sellIsCounterTrend or bearishDisplacementInSellZone or bearishAnySweepInSellZone
+    bool syncedSellCandidateValid=not na(syncedSellEntryLo) and not na(syncedSellEntryHi) and syncedSellEntryHi>syncedSellEntryLo and allowSell and bearishArmedConfirmation and syncedSellReversalValid and syncedSellRetests<=MAXIMUM_ZONE_RETESTS
 
     if syncedSellCandidateValid
-        bool sellRectangleMoved=na(armedSellEntryLo) or na(armedSellEntryHi) or math.abs(syncedSellEntryLo-armedSellEntryLo)>zoneSyncTolerance or math.abs(syncedSellEntryHi-armedSellEntryHi)>zoneSyncTolerance
-
         armedSellSupportLo:=sellSelectedLo
         armedSellSupportHi:=sellSelectedHi
         armedSellEntryLo:=syncedSellEntryLo
@@ -1518,10 +1450,11 @@ if sellZoneChanged
         armedSellRisk:=sellSelectedRisk
         armedSellConfirmation:=bearishConfirmationName
         armedSellCounterTrend:=sellIsCounterTrend
-        if sellRectangleMoved
-            armedSellPending:=false
-            armedSellPendingBar:=na
-        armedSellResyncEvent:=true
+        armedSellAtClock:=barstate.isrealtime?timenow:time_close
+        armedSellSetupId:="SELL-"+str.tostring(syncedSellEntryTime)+"-"+str.tostring(bar_index)
+        armedSellTouchLatched:=false
+        armedSellTouchPrice:=na
+        armedSellEvent:=true
     else
         armedSellArmed:=false
         armedSellSetupId:=""
@@ -1543,10 +1476,10 @@ if sellZoneChanged
         armedSellEntryLo:=na
         armedSellEntryHi:=na
         armedSellEntryTime:=na
-        armedSellPending:=false
-        armedSellPendingBar:=na
+        armedSellTouchLatched:=false
+        armedSellTouchPrice:=na
 
-if armedSellEvent or armedSellResyncEvent
+if armedSellEvent
     float armedSellMid=(armedSellSupportLo+armedSellSupportHi)/2.0
     bool sellReasonBRN=f_near_round(armedSellMid,brnStep,confluenceTolerance)
     bool sellReasonMicro=not sellReasonBRN and f_near_round(armedSellMid,microBrnStep,confluenceTolerance)
@@ -1584,8 +1517,8 @@ if armedSellEvent or armedSellResyncEvent
         armedSellExtraReasons:=armedSellExtraReasons+"\nFIBONACCI CONFLUENCE"
 
 bool sellExpired=armedSellArmed and not na(armedSellAtClock) and armedClock-armedSellAtClock>armedExpiryEntryBars*entrySeconds*1000.0
-// See buyBiasInvalid above — counter-trend is frozen against bias flips.
-bool sellBiasInvalid=armedSellArmed and not armedSellCounterTrend and not trendSellRoute
+bool sellTrendRouteInvalid=armedSellArmed and not armedSellCounterTrend and not trendSellRoute
+bool sellBiasInvalid=sellTrendRouteInvalid
 bool sellZoneInvalid=armedSellArmed and close>armedSellSupportHi+invalidationBuffer
 
 bool sellSupportTouched=armedSellArmed and f_overlap(low,high,armedSellSupportLo,armedSellSupportHi)
@@ -1593,36 +1526,79 @@ if armedSellArmed and not sellSupportTouched
     armedSellZoneExited:=true
 bool sellRetestLimitInvalid=armedSellArmed and armedSellZoneExited and sellSupportTouched and armedSellZoneRetests>=MAXIMUM_ZONE_RETESTS
 
-bool sellEntryOutsideVisibleRiskZone=armedSellArmed and (na(sellSelectedLo) or na(sellSelectedHi) or na(armedSellEntryLo) or na(armedSellEntryHi) or armedSellEntryLo<sellSelectedLo-zoneSyncTolerance or armedSellEntryHi>sellSelectedHi+zoneSyncTolerance)
+bool armedSellEntryTouchedNow=armedSellArmed and f_overlap(low,high,armedSellEntryLo,armedSellEntryHi)
+bool sellEntrySideInvalid=armedSellArmed and not armedSellEntryTouchedNow and armedSellEntryLo<=close+readySideBuffer
 
-bool armedSellRectangleValid=armedSellArmed and not na(armedSellAtBar) and not na(armedSellEntryLo) and not na(armedSellEntryHi) and armedSellEntryHi>armedSellEntryLo
+bool sellEntryOutsideVisibleRiskZone=armedSellArmed and (na(sellSelectedLo) or na(sellSelectedHi) or na(armedSellEntryLo) or na(armedSellEntryHi) or armedSellEntryLo<sellSelectedLo-syminfo.mintick or armedSellEntryHi>sellSelectedHi+syminfo.mintick)
 
-bool sellOnApproachSide=armedSellRectangleValid and cmpPrice<armedSellEntryLo-readySideBuffer
-if sellOnApproachSide and not armedSellPending
-    armedSellPending:=true
-    armedSellPendingBar:=bar_index
+bool sellTouchAfterArming=armedSellArmed and not na(armedSellAtBar) and bar_index>armedSellAtBar
+bool sellFirstTouchNow=sellTouchAfterArming and armedSellEntryTouchedNow and not armedSellTouchLatched
 
-bool sellReachedRectangle=armedSellRectangleValid and cmpPrice>=armedSellEntryLo-touchTolerance
-bool sellTouchNow=armedSellRectangleValid and armedSellPending and barstate.isconfirmed and sellReachedRectangle
+if sellFirstTouchNow
+    armedSellTouchLatched:=true
+    armedSellTouchPrice:=f_touch_entry(armedSellEntryLo,armedSellEntryHi,close[1],open,close)
 
-bool sellEntrySideInvalid=armedSellRectangleValid and not armedSellPending and not sellTouchNow and armedSellEntryHi<cmpPrice-touchTolerance
+bool sellReadyInvalidBeforeTouch=sellExpired or sellBiasInvalid or sellZoneInvalid or sellRetestLimitInvalid or sellEntrySideInvalid or sellEntryOutsideVisibleRiskZone
+if armedSellArmed and not armedSellTouchLatched and (sellReadyInvalidBeforeTouch or not chartMatchesSelected)
+    armedSellArmed:=false
+    armedSellSetupId:=""
+    armedSellRisk:=""
+    armedSellConfirmation:=""
+    armedSellExtraReasons:=""
+    armedSellCounterTrend:=false
+    armedSellMtfCluster:=false
+    armedSellSweepReclaim:=false
+    armedSellPremiumLiquidity:=false
+    armedSellDisplacementChoch:=false
+    armedSellEmaSlope:=false
+    armedSellEmaRegime:=false
+    armedSellVWAP:=false
+    armedSellAtClock:=na
+    armedSellZoneRetests:=0
+    armedSellZoneExited:=false
+    armedSellEntryLo:=na
+    armedSellEntryHi:=na
+    armedSellTouchLatched:=false
+    armedSellTouchPrice:=na
 
-bool sellReadyInvalid=sellExpired or sellBiasInvalid or sellZoneInvalid or sellRetestLimitInvalid or sellEntrySideInvalid or sellEntryOutsideVisibleRiskZone
+bool sellEntryTouched=armedSellArmed and armedSellTouchLatched
 
-float sellPreviewEntry=armedSellRectangleValid?armedSellEntryLo:na
-[sellPreviewSL,sellPreviewTP,sellPreviewRR,sellPreviewReleasable]=f_resolve_plan(false,sellPreviewEntry,armedSellEntryLo,armedSellEntryHi,S1,S2,R1,R2,supportSwingLow,supportSwingHigh,supportTrendSupport,supportTrendResistance,snrBuffer,volatilityStopDistance,volatilityTargetDistance,targetMinimumDistance,targetMaximumDistance,minimumRR,maximumRR)
-bool sellReadyPlanInvalid=armedSellRectangleValid and not sellPreviewReleasable
+float sellPlannedEntry=sellEntryTouched?armedSellTouchPrice:na
+float sellPlannedSL=na
+float sellPlannedTP=na
+float sellPlannedRR=na
 
-float sellPlannedEntry=sellTouchNow?f_live_entry(false,armedSellEntryLo,armedSellEntryHi,cmpPrice):na
-bool sellEntryWithinSlippage=sellTouchNow and not na(sellPlannedEntry) and math.abs(sellPlannedEntry-cmpPrice)<=liveMaxSlippage
-[sellPlannedSL,sellPlannedTP,sellPlannedRR,sellPlanReleasable]=f_resolve_plan(false,sellPlannedEntry,armedSellEntryLo,armedSellEntryHi,S1,S2,R1,R2,supportSwingLow,supportSwingHigh,supportTrendSupport,supportTrendResistance,snrBuffer,volatilityStopDistance,volatilityTargetDistance,targetMinimumDistance,targetMaximumDistance,minimumRR,maximumRR)
+if sellEntryTouched and chartMatchesSelected
+    float sellBaseSL=math.round_to_mintick(armedSellEntryHi+volatilityStopDistance)
+    float sellFreshResistance=f_nearest_above4(armedSellEntryHi+snrBuffer,R1,R2,supportSwingHigh,supportTrendResistance)
+    float sellProtectedSL=not na(sellFreshResistance)?math.round_to_mintick(sellFreshResistance-snrBuffer):sellBaseSL
+    sellPlannedSL:=math.min(sellBaseSL,sellProtectedSL)
 
-bool sellConfluenceValid=armedSellConfluences>=MIN_CONFLUENCES
+    if sellPlannedSL>sellPlannedEntry
+        float sellRiskDistance=sellPlannedSL-sellPlannedEntry
+        float sellDesiredReward=f_clamp(math.max(volatilityTargetDistance,sellRiskDistance*1.5),targetMinimumDistance,targetMaximumDistance)
+        sellDesiredReward:=math.min(sellDesiredReward,sellRiskDistance*maximumRR)
+        float sellFreshSupport=f_nearest_below4(sellPlannedEntry,S1,S2,supportSwingLow,supportTrendSupport)
+        float sellAvailableReward=not na(sellFreshSupport)?sellPlannedEntry-(sellFreshSupport+snrBuffer):sellDesiredReward
+        float sellRewardDistance=math.min(sellDesiredReward,sellAvailableReward)
+        sellPlannedTP:=sellRewardDistance>=sellRiskDistance*minimumRR?math.round_to_mintick(sellPlannedEntry-sellRewardDistance):na
+        sellPlannedRR:=not na(sellPlannedTP)?(sellPlannedEntry-sellPlannedTP)/sellRiskDistance:na
+
+bool sellPrimaryPlanValid=sellEntryTouched and not na(sellPlannedEntry) and not na(sellPlannedSL) and not na(sellPlannedTP) and not na(sellPlannedRR) and sellPlannedRR>=minimumRR and sellPlannedRR<=maximumRR+0.0001
+
+if sellEntryTouched and not sellPrimaryPlanValid and not na(sellPlannedEntry)
+    float sellFallbackRisk=math.max(volatilityStopDistance,targetMinimumDistance/maximumRR)
+    float sellFallbackRewardFloor=sellFallbackRisk*minimumRR
+    float sellFallbackRewardCeiling=math.max(sellFallbackRewardFloor,math.min(targetMaximumDistance,sellFallbackRisk*maximumRR))
+    float sellFallbackReward=f_clamp(math.max(volatilityTargetDistance,targetMinimumDistance),sellFallbackRewardFloor,sellFallbackRewardCeiling)
+    sellPlannedSL:=math.round_to_mintick(sellPlannedEntry+sellFallbackRisk)
+    sellPlannedTP:=math.round_to_mintick(sellPlannedEntry-sellFallbackReward)
+    sellPlannedRR:=sellFallbackReward/sellFallbackRisk
+
+bool sellValidPlan=sellEntryTouched and not na(sellPlannedEntry) and not na(sellPlannedSL) and not na(sellPlannedTP) and not na(sellPlannedRR) and sellPlannedRR>=minimumRR and sellPlannedRR<=maximumRR+0.0001
 bool sellCooldownFilterOk=not (useLossCooldown and not na(lastLossZoneLo) and lastLossDirection=="SELL" and f_overlap(armedSellSupportLo,armedSellSupportHi,lastLossZoneLo,lastLossZoneHi) and (armedClock-lastLossClock)<lossCooldownMs)
-bool sellValidPlan=armedSellArmed and chartMatchesSelected and sellTouchNow and sellEntryWithinSlippage and sellPlanReleasable and sellConfluenceValid and sessionFilterOk and volatilityFilterOk and sellCooldownFilterOk
-bool sellTouchRejected=sellTouchNow and not sellValidPlan
 
-if sellValidPlan and not liveTradeLocked
+if armedSellArmed and sellValidPlan and sessionFilterOk and volatilityFilterOk and sellCooldownFilterOk and not liveTradeLocked and barstate.isconfirmed
     liveTradeLocked:=true
     activeSetupId:=armedSellSetupId
     activeDirection:="SELL"
@@ -1647,18 +1623,16 @@ if sellValidPlan and not liveTradeLocked
     activeBreakEvenTriggerPips:=breakEvenTriggerPips
     activeBreakEvenTriggerPrice:=math.round_to_mintick(activeEntry-breakEvenTriggerDistance)
     float sellMarkerOffset=math.max(nz(chartATR,targetMinimumDistance)*0.20,pipSize*10.0)
-    activeMarkerPrice:=activeEntry+sellMarkerOffset
+    activeMarkerPrice:=high+sellMarkerOffset
 
-    bool sellMarkersEnabled=barstate.isrealtime?showMarkers:showBacktestMarkers
-    if sellMarkersEnabled and activeSetupId!="" and array.indexof(permanentMarkerSetupIds,activeSetupId)==-1
-        string sellMarkerTooltip=(barstate.isrealtime?"ALERT-SYNCED • ":"HISTORICAL RECONSTRUCTION • ")+"SELL"
-        label sellCommittedMarker=label.new(activeStartTime,activeMarkerPrice,"SELL",xloc=xloc.bar_time,yloc=yloc.price,style=label.style_label_down,color=sellColor,textcolor=premiumTextColor,size=size.small,tooltip=sellMarkerTooltip)
+    if not barstate.isrealtime and showBacktestMarkers and showMarkers and activeSetupId!="" and array.indexof(permanentMarkerSetupIds,activeSetupId)==-1
+        label sellHistoricalMarker=label.new(activeStartTime,activeMarkerPrice,"SELL",xloc=xloc.bar_time,yloc=yloc.price,style=label.style_label_down,color=sellColor,textcolor=premiumTextColor,size=size.small,tooltip="HISTORICAL RECONSTRUCTION • NO ALERT • SELL")
         array.push(permanentMarkerSetupIds,activeSetupId)
-        array.push(permanentMarkerLabels,sellCommittedMarker)
+        array.push(permanentMarkerLabels,sellHistoricalMarker)
         while array.size(permanentMarkerSetupIds)>MAX_HISTORICAL_MARKERS
             array.shift(permanentMarkerSetupIds)
-            label sellOldestMarker=array.shift(permanentMarkerLabels)
-            label.delete(sellOldestMarker)
+            label sellOldestHistoricalMarker=array.shift(permanentMarkerLabels)
+            label.delete(sellOldestHistoricalMarker)
 
     activeExit:=na
     activeResultPips:=na
@@ -1683,38 +1657,14 @@ if sellValidPlan and not liveTradeLocked
     armedSellEntryLo:=na
     armedSellEntryHi:=na
     armedSellEntryTime:=na
-    armedSellPending:=false
-    armedSellPendingBar:=na
+    armedSellTouchLatched:=false
+    armedSellTouchPrice:=na
     liveEvent:=true
     realtimeLiveEvent:=barstate.isrealtime
 
-if armedSellArmed and (sellTouchRejected or sellReadyInvalid or sellReadyPlanInvalid or not chartMatchesSelected)
-    armedSellArmed:=false
-    armedSellSetupId:=""
-    armedSellRisk:=""
-    armedSellConfirmation:=""
-    armedSellExtraReasons:=""
-    armedSellCounterTrend:=false
-    armedSellMtfCluster:=false
-    armedSellSweepReclaim:=false
-    armedSellPremiumLiquidity:=false
-    armedSellDisplacementChoch:=false
-    armedSellEmaSlope:=false
-    armedSellEmaRegime:=false
-    armedSellVWAP:=false
-    armedSellAtBar:=na
-    armedSellAtClock:=na
-    armedSellZoneRetests:=0
-    armedSellZoneExited:=false
-    armedSellEntryLo:=na
-    armedSellEntryHi:=na
-    armedSellEntryTime:=na
-    armedSellPending:=false
-    armedSellPendingBar:=na
-
 //--------------------------------------------------------------------------------------------------
 // ACTIVE trade tracking, break-even and trailing stop (singular — unchanged
-// from v4.7.0 beyond variable names already in scope)
+// from v4.7.0)
 //--------------------------------------------------------------------------------------------------
 if state=="ACTIVE" and liveTradeLocked and (bar_index>activeStartBar or (barstate.isrealtime and not liveEvent))
     // The initial SL remains active until the favorable break-even threshold is reached.
@@ -1896,8 +1846,8 @@ if barstate.islastconfirmedhistory
     armedBuyEntryLo:=na
     armedBuyEntryHi:=na
     armedBuyEntryTime:=na
-    armedBuyPending:=false
-    armedBuyPendingBar:=na
+    armedBuyTouchLatched:=false
+    armedBuyTouchPrice:=na
     armedSellArmed:=false
     armedSellSetupId:=""
     armedSellRisk:=""
@@ -1916,8 +1866,8 @@ if barstate.islastconfirmedhistory
     armedSellEntryLo:=na
     armedSellEntryHi:=na
     armedSellEntryTime:=na
-    armedSellPending:=false
-    armedSellPendingBar:=na
+    armedSellTouchLatched:=false
+    armedSellTouchPrice:=na
     liveTradeLocked:=false
     activeSetupId:=""
     activeDirection:="NONE"
@@ -1963,8 +1913,8 @@ if barstate.islastconfirmedhistory
 // Unified marker and alert events
 //--------------------------------------------------------------------------------------------------
 // The currently ACTIVE setup also displays BUY LIVE or SELL LIVE.
-// This LIVE badge is transient. The permanent BUY/SELL marker is committed
-// directly at the LIVE lock above, independent of the alert pipeline.
+// This LIVE badge is transient. The permanent BUY/SELL marker is committed only
+// after the matching realtime LIVE alert() call executes and remains after the trade ends.
 if showMarkers and state=="ACTIVE" and activeDirection!="NONE" and not na(activeStartTime) and not na(activeMarkerPrice)
     string liveMarkerStyle=activeDirection=="BUY"?label.style_label_up:label.style_label_down
     string liveMarkerText=activeDirection=="BUY"?"BUY LIVE":"SELL LIVE"
@@ -1990,7 +1940,7 @@ else
 // alert.freq_all is paired with setup/state keys, so each event is delivered once
 // without suppressing another event that happens in the same chart bar.
 // No READY alert: the READY box/dashboard/card still draw on chart as before,
-// but no alert() fires until a setup actually goes LIVE.
+// but no alert() fires until a setup actually goes LIVE (unchanged from v4.7.0).
 if enableAlerts and realtimeLiveEvent and alertLive
     string liveAlertKey=activeSetupId+"|LIVE"
     if liveAlertKey!=lastLiveAlertKey
@@ -1999,6 +1949,19 @@ if enableAlerts and realtimeLiveEvent and alertLive
         string activeMessage=activeEmoji+" "+activeDirection+" • TRADE ACTIVE\n\n"+syminfo.ticker+" • "+mode+" • "+entryTfLabel+"\n\nENTRY: "+f_price(activeEntry)+"\nTAKE PROFIT: "+f_price(activeTP)+"\nSTOP LOSS: "+f_price(activeSL)+"\n\nCONFLUENCES: "+str.tostring(activeConfluences)+"\n━━━━━━━━━━━━━━━\n⚡️ POSITION ACTIVE"+counterTrendLine+"\n\nEZYMAP • SCALP MASTERY"
         alert(activeMessage,alert.freq_all)
         lastLiveAlertKey:=liveAlertKey
+
+        // Atomic marker commit: create the permanent BUY/SELL marker only after
+        // the matching realtime alert() call above executes.
+        if showMarkers and activeSetupId!="" and array.indexof(permanentMarkerSetupIds,activeSetupId)==-1
+            string syncedMarkerStyle=activeDirection=="BUY"?label.style_label_up:label.style_label_down
+            color syncedMarkerColor=activeDirection=="BUY"?buyColor:sellColor
+            label syncedMarker=label.new(activeStartTime,activeMarkerPrice,activeDirection,xloc=xloc.bar_time,yloc=yloc.price,style=syncedMarkerStyle,color=syncedMarkerColor,textcolor=premiumTextColor,size=size.small,tooltip="ALERT-SYNCED • "+activeDirection)
+            array.push(permanentMarkerSetupIds,activeSetupId)
+            array.push(permanentMarkerLabels,syncedMarker)
+            while array.size(permanentMarkerSetupIds)>MAX_HISTORICAL_MARKERS
+                array.shift(permanentMarkerSetupIds)
+                label oldestSyncedMarker=array.shift(permanentMarkerLabels)
+                label.delete(oldestSyncedMarker)
 
 if enableAlerts and barstate.isrealtime and (tpEvent or slEvent or beEvent) and alertResult
     string resultAlertKey=resultCardSetupId+"|"+resultCardStatus
