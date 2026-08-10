@@ -236,9 +236,9 @@ bool ShouldShow(ENUM_CALENDAR_EVENT_IMPORTANCE imp)
 }
 
 //----------------------------- Drawing -------------------------------
-void DrawNewsLine(long valueId,datetime tm,color clr,string label)
+void DrawNewsLine(ulong valueId,datetime tm,color clr,string label)
 {
-   string n=PREFIX+"VLINE_"+IntegerToString(valueId);
+   string n=PREFIX+"VLINE_"+IntegerToString((long)valueId);
    if(ObjectFind(0,n)<0)
       ObjectCreate(0,n,OBJ_VLINE,0,tm,0);
    else
@@ -250,7 +250,7 @@ void DrawNewsLine(long valueId,datetime tm,color clr,string label)
 
    if(!InpShowLabels) return;
 
-   string ln=PREFIX+"LBL_"+IntegerToString(valueId);
+   string ln=PREFIX+"LBL_"+IntegerToString((long)valueId);
    double priceTop=ChartGetDouble(0,CHART_PRICE_MAX,0);
    if(ObjectFind(0,ln)<0)
       ObjectCreate(0,ln,OBJ_TEXT,0,tm,priceTop);
@@ -267,7 +267,7 @@ void DrawNewsLine(long valueId,datetime tm,color clr,string label)
 //----------------------------- Calendar scan --------------------------
 struct NewsItem
 {
-   long     valueId;
+   ulong    valueId;
    datetime tm;
    string   text;
    ENUM_CALENDAR_EVENT_IMPORTANCE importance;
