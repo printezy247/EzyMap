@@ -1,16 +1,24 @@
 //+------------------------------------------------------------------+
-//| EzyMap Lot Size Calculator                                        |
-//| On-chart GUI: pick a pair from the dropdown, type Capital and SL  |
-//| Distance (points), click CALCULATE - get Min/Med/Max risk lots.  |
+//| EzyMap Margin & Max Lots Calculator                                |
+//| On-chart GUI: pick a pair, type Capital/Free Margin, click        |
+//| CALCULATE - get margin per lot and Conservative/Moderate/         |
+//| Aggressive max lot sizes.                                         |
+//|                                                                    |
+//| Built as an EXPERT ADVISOR, not an indicator: OrderCalcMargin() is |
+//| a trade-context function that MT5 does not allow indicators to    |
+//| call (fails with error #4014 regardless of symbol/timing) - only  |
+//| EAs and Scripts can call it. An EA is required here to keep the   |
+//| persistent on-chart GUI (a Script can't stay open for buttons).   |
+//| It does not place any trades - only calls the read-only margin    |
+//| calculation function.                                             |
 //+------------------------------------------------------------------+
 #property copyright "EzyMap"
-#property version   "4.00"
-#property indicator_chart_window
-#property indicator_plots 0
+#property version   "2.00"
+#property strict
 
-input double InpMinRiskPercent = 0.5;    // Min risk tier (% of capital)
-input double InpMedRiskPercent = 10.0;   // Medium risk tier (% of capital)
-input double InpMaxRiskPercent = 25.0;   // Max risk tier (% of capital)
+input double InpConservativePercent = 30.0;   // Conservative tier (% of free margin used)
+input double InpModeratePercent     = 50.0;   // Moderate tier (% of free margin used)
+input double InpAggressivePercent   = 80.0;   // Aggressive tier (% of free margin used)
 
 input color  InpPanelColor       = C'7,10,14';
 input color  InpPanelBorderColor = C'56,65,76';
@@ -25,25 +33,21 @@ input color  InpSymBtnBorder     = C'56,65,76';
 input color  InpSymBtnTextColor  = C'204,211,218';
 input color  InpSymBtnSelColor   = C'237,185,58';
 input color  InpSymBtnSelText    = C'7,10,14';
-input color  InpMinRiskColor     = C'52,211,176';
-input color  InpMedRiskColor     = C'237,185,58';
-input color  InpMaxRiskColor     = C'235,72,96';
+input color  InpConsColor        = C'52,211,176';
+input color  InpModColor         = C'237,185,58';
+input color  InpAggColor         = C'235,72,96';
 input color  InpErrorColor       = C'235,72,96';
 input color  InpCloseBtnColor    = C'40,14,18';
 input color  InpCloseBtnTextColor= C'235,72,96';
 
-#define PRODUCT_NAME "EzyMap Lot Size Calculator"
-string PREFIX="EZLOT_";
+#define PRODUCT_NAME "EzyMap Margin Calculator"
+string PREFIX="EZMGN_";
 
-int PX=14;   // panel x
-int PY=38;   // panel y
-int PW=332;  // panel width
-int PH=406;  // panel height (closed state)
+int PX=14;
+int PY=38;
+int PW=332;
+int PH=356;
 
-// Instrument list: friendly label -> alias key used to resolve the broker's
-// actual symbol name (handles suffixes like XAUUSD.sc, BTCUSD-ECN, etc).
-// Forex = every pair combination across USD/GBP/EUR/JPY/AUD/CAD/CHF (21),
-// plus Gold, Silver, Oil, US30 and BTCUSD (5) = 26 total.
 #define PAIR_COUNT 26
 string g_aliasKeys[PAIR_COUNT] =
 {
@@ -117,10 +121,8 @@ void SetLabelText(string suffix,string text,color clr)
    ObjectSetInteger(0,n,OBJPROP_COLOR,clr);
 }
 
-// NOTE: SELECTABLE must be FALSE on edit/button objects. If it is TRUE,
-// the first click just "selects" the object (drag handles) instead of
-// focusing it for typing/clicking - this was the root cause of an
-// earlier "can't type a value" bug.
+// SELECTABLE must stay FALSE on edit/button objects, otherwise the first
+// click just "selects" the object instead of focusing/clicking it.
 void MakeEdit(string suffix,int x,int y,int w,int h,string defaultText)
 {
    string n=PREFIX+suffix;
@@ -183,9 +185,9 @@ int VolumeDecimals(double step)
 
 //------------------------------ Layout -------------------------------
 #define HEAD_X 26
-#define HEAD_Y 106
+#define HEAD_Y 100
 #define HEAD_W 280
-#define HEAD_H 28
+#define HEAD_H 26
 
 #define DD_COLS 2
 #define DD_ITEM_W 136
@@ -199,32 +201,29 @@ void BuildGUI()
 {
    MakeRect("PANEL",PX,PY,PW,PH,InpPanelColor,InpPanelBorderColor,50);
 
-   // Small corner close button - tucked into the panel's top-right corner
-   // so it doesn't eat a full row of space. Re-open by double-clicking the
-   // indicator in Navigator.
+   // Small corner close button - re-open by double-clicking the indicator
+   // in Navigator, no need for it to take a full row.
    MakeButton("BTN_CLOSE",PX+PW-38,PY+6,30,26,"✕",InpCloseBtnColor,InpCloseBtnTextColor,11);
 
-   MakeLabel("TITLE",26,48,"EZYMAP LOT SIZE CALCULATOR",InpAccentColor,11,true);
-   MakeLabel("SUB",26,68,"1) Pick a pair  2) Fill Capital & SL  3) Calculate",InpTextColor,8,false);
+   MakeLabel("TITLE",26,48,"EZYMAP MARGIN & MAX LOTS CALC",InpAccentColor,11,true);
+   MakeLabel("SUB",26,68,"1) Pick a pair  2) Fill Capital  3) Calculate",InpTextColor,8,false);
 
-   MakeLabel("LBL_PAIR",HEAD_X,90,"SELECT PAIR",InpTextColor,8,false);
+   MakeLabel("LBL_PAIR",HEAD_X,86,"SELECT PAIR",InpTextColor,8,false);
    MakeButton("BTN_HEAD",HEAD_X,HEAD_Y,HEAD_W,HEAD_H,"TAP TO SELECT PAIR   ▾",InpEditBgColor,InpTextColor,9);
+   MakeLabel("SEL_NOTE",26,134,"No pair selected yet.",InpTextColor,8,false);
 
-   MakeLabel("SEL_NOTE",26,142,"No pair selected yet.",InpTextColor,8,false);
+   MakeLabel("LBL_CAP",26,152,"CAPITAL / FREE MARGIN ($)",InpTextColor,8,false);
+   MakeEdit("EDIT_CAPITAL",26,166,280,22,DoubleToString(AccountInfoDouble(ACCOUNT_MARGIN_FREE),2));
 
-   MakeLabel("LBL_CAP",26,166,"CAPITAL / BALANCE ($)",InpTextColor,8,false);
-   MakeEdit("EDIT_CAPITAL",26,182,280,26,DoubleToString(AccountInfoDouble(ACCOUNT_BALANCE),2));
+   MakeButton("BTN_CALC",26,196,280,28,"CALCULATE",InpButtonColor,InpButtonTextColor,10);
 
-   MakeLabel("LBL_SL",26,216,"STOP LOSS DISTANCE (POINTS)",InpTextColor,8,false);
-   MakeEdit("EDIT_SL",26,232,280,26,"200");
-
-   MakeButton("BTN_CALC",26,266,280,32,"CALCULATE LOT SIZE",InpButtonColor,InpButtonTextColor,10);
-
-   MakeLabel("RES_HEAD",26,310,"RESULTS",InpTextColor,9,true);
-   MakeLabel("RES_MIN",26,328," ",InpMinRiskColor,9,false);
-   MakeLabel("RES_MED",26,346," ",InpMedRiskColor,9,false);
-   MakeLabel("RES_MAX",26,364," ",InpMaxRiskColor,9,false);
-   MakeLabel("RES_NOTE",26,382,"Pick a pair above to begin.",InpTextColor,8,false);
+   MakeLabel("RES_HEAD",26,234,"RESULTS",InpTextColor,9,true);
+   MakeLabel("RES_LEV",26,250," ",InpTextColor,8,false);
+   MakeLabel("RES_MARGIN",26,266," ",InpAccentColor,9,false);
+   MakeLabel("RES_CONS",26,284," ",InpConsColor,9,false);
+   MakeLabel("RES_MOD",26,302," ",InpModColor,9,false);
+   MakeLabel("RES_AGG",26,320," ",InpAggColor,9,false);
+   MakeLabel("RES_NOTE",26,338,"Pick a pair above to begin.",InpTextColor,8,false);
 }
 
 void ItemCoords(int idx,int &x,int &y)
@@ -268,8 +267,6 @@ void CloseDropdown()
 }
 
 //------------------------- Symbol resolution -------------------------
-// Different brokers suffix/rename symbols (XAUUSD.sc, BTCUSD-ECN, US30.cash...).
-// Resolve the alias to whatever matching symbol the broker actually offers.
 void CandidatesFor(string alias,string &out[])
 {
    if(alias=="XAUUSD")      { string a[]={"XAUUSD","GOLD"}; ArrayCopy(out,a); }
@@ -280,7 +277,44 @@ void CandidatesFor(string alias,string &out[])
    else                     { string a[]={alias}; ArrayCopy(out,a); }
 }
 
-string ResolveSymbol(string alias)
+// Scans 'inMarketWatchOnly' true = only symbols the user already has
+// watched (SymbolsTotal(true)) - these are guaranteed synced/tradeable.
+// false = the broker's entire symbol universe (thousands of entries,
+// many inactive/unsynced duplicates), used only as a last-resort fallback.
+string ScanSymbols(string &upperCandidates[],bool inMarketWatchOnly)
+{
+   int total=SymbolsTotal(inMarketWatchOnly);
+
+   for(int i=0;i<total;i++)
+   {
+      string name=SymbolName(i,inMarketWatchOnly);
+      string upperName=name; StringToUpper(upperName);
+      for(int c=0;c<ArraySize(upperCandidates);c++)
+         if(upperName==upperCandidates[c]) return name;
+   }
+   for(int i=0;i<total;i++)
+   {
+      string name=SymbolName(i,inMarketWatchOnly);
+      string upperName=name; StringToUpper(upperName);
+      for(int c=0;c<ArraySize(upperCandidates);c++)
+         if(StringFind(upperName,upperCandidates[c])==0) return name;
+   }
+   for(int i=0;i<total;i++)
+   {
+      string name=SymbolName(i,inMarketWatchOnly);
+      string upperName=name; StringToUpper(upperName);
+      for(int c=0;c<ArraySize(upperCandidates);c++)
+         if(StringFind(upperName,upperCandidates[c])>=0) return name;
+   }
+   return "";
+}
+
+// Prefer whatever the user already has in Market Watch - it's guaranteed
+// selected, synced and tradeable there, unlike a fresh match pulled from
+// the broker's full symbol universe (which can land on an unsynced or
+// otherwise unusable duplicate, e.g. a swap-free/ECN variant of the same
+// pair that OrderCalcMargin then fails on).
+string ResolveSymbol(string alias,bool &wasAlreadyWatched)
 {
    string candidates[];
    CandidatesFor(alias,candidates);
@@ -294,136 +328,175 @@ string ResolveSymbol(string alias)
       upperCandidates[c]=u;
    }
 
-   int total=SymbolsTotal(false);
+   string found=ScanSymbols(upperCandidates,true);
+   if(found!="")
+   {
+      wasAlreadyWatched=true;
+      return found;
+   }
 
-   // Pass 1: exact match
-   for(int i=0;i<total;i++)
+   wasAlreadyWatched=false;
+   return ScanSymbols(upperCandidates,false);
+}
+
+// After adding a symbol that wasn't already in Market Watch, give the
+// terminal a brief moment to sync its trade specification/price before
+// margin math relies on it - avoids OrderCalcMargin failing on a symbol
+// that was only just selected.
+bool WaitForSymbolReady(string symbol)
+{
+   for(int i=0;i<10;i++)
    {
-      string name=SymbolName(i,false);
-      string upperName=name; StringToUpper(upperName);
-      for(int c=0;c<ArraySize(upperCandidates);c++)
-         if(upperName==upperCandidates[c]) return name;
+      if(SymbolInfoDouble(symbol,SYMBOL_BID)>0.0 && SymbolInfoDouble(symbol,SYMBOL_ASK)>0.0)
+         return true;
+      Sleep(100);
    }
-   // Pass 2: name starts with candidate
-   for(int i=0;i<total;i++)
-   {
-      string name=SymbolName(i,false);
-      string upperName=name; StringToUpper(upperName);
-      for(int c=0;c<ArraySize(upperCandidates);c++)
-         if(StringFind(upperName,upperCandidates[c])==0) return name;
-   }
-   // Pass 3: name contains candidate anywhere
-   for(int i=0;i<total;i++)
-   {
-      string name=SymbolName(i,false);
-      string upperName=name; StringToUpper(upperName);
-      for(int c=0;c<ArraySize(upperCandidates);c++)
-         if(StringFind(upperName,upperCandidates[c])>=0) return name;
-   }
-   return "";
+   return false;
 }
 
 //----------------------------- Calculation ---------------------------
+// Finds the largest lot size (respecting the volume step) whose margin
+// requirement fits inside 'budget', re-checking via OrderCalcMargin at
+// each step so tiered/non-linear broker margin schedules stay accurate.
+string BuildTierText(string label,double pct,double budget,string symbol,double price,
+                      double volMin,double volMax,double volStep,int decimals,string &warnOut)
+{
+   double marginForOne=0.0;
+   if(!OrderCalcMargin(ORDER_TYPE_BUY,symbol,1.0,price,marginForOne) || marginForOne<=0.0)
+      return label+" ("+DoubleToString(pct,0)+"%): unavailable";
+
+   double estimate=MathFloor((budget/marginForOne)/volStep)*volStep;
+   if(estimate>volMax) estimate=MathFloor(volMax/volStep)*volStep;
+
+   double actualMargin=0.0;
+   bool fits=false;
+   while(estimate>=volMin)
+   {
+      if(OrderCalcMargin(ORDER_TYPE_BUY,symbol,estimate,price,actualMargin) && actualMargin<=budget)
+      {
+         fits=true;
+         break;
+      }
+      estimate-=volStep;
+   }
+
+   if(!fits || estimate<volMin)
+   {
+      warnOut=" ⚠ some tiers can't even afford the broker min lot.";
+      return label+" ("+DoubleToString(pct,0)+"%):  0.00 lots  (min lot too expensive)";
+   }
+
+   estimate=NormalizeDouble(estimate,8);
+   return label+" ("+DoubleToString(pct,0)+"%):  "+DoubleToString(estimate,decimals)+" lots   ~"+
+          DoubleToString(actualMargin,2)+" "+AccountInfoString(ACCOUNT_CURRENCY)+" margin used";
+}
+
 void DoCalculate()
 {
    if(g_selectedIndex<0)
    {
-      SetLabelText("RES_NOTE","⚠ Please select a pair from the dropdown above first.",InpErrorColor);
+      SetLabelText("RES_NOTE","⚠ Please select a pair from the dropdown above.",InpErrorColor);
       ChartRedraw(0);
       return;
    }
 
    string alias=g_aliasKeys[g_selectedIndex];
-   string symbol=ResolveSymbol(alias);
-
+   bool wasAlreadyWatched=false;
+   string symbol=ResolveSymbol(alias,wasAlreadyWatched);
    if(symbol=="" || !SymbolSelect(symbol,true))
    {
       SetLabelText("SEL_NOTE","⚠ Could not find a broker symbol for "+g_aliasLabels[g_selectedIndex]+".",InpErrorColor);
-      SetLabelText("RES_MIN"," ",InpMinRiskColor);
-      SetLabelText("RES_MED"," ",InpMedRiskColor);
-      SetLabelText("RES_MAX"," ",InpMaxRiskColor);
       SetLabelText("RES_NOTE","Add it to Market Watch manually and try again.",InpErrorColor);
       ChartRedraw(0);
       return;
    }
-
+   if(!wasAlreadyWatched && !WaitForSymbolReady(symbol))
+   {
+      SetLabelText("SEL_NOTE","Selected: "+g_aliasLabels[g_selectedIndex]+"  →  broker symbol: "+symbol,InpAccentColor);
+      SetLabelText("RES_NOTE","⚠ "+symbol+" was just added to Market Watch and hasn't synced yet - click CALCULATE again in a moment.",InpErrorColor);
+      ChartRedraw(0);
+      return;
+   }
    SetLabelText("SEL_NOTE","Selected: "+g_aliasLabels[g_selectedIndex]+"  →  broker symbol: "+symbol,InpAccentColor);
 
    double capital=StringToDouble(TrimBoth(GetEditText("EDIT_CAPITAL")));
-   double slPoints=StringToDouble(TrimBoth(GetEditText("EDIT_SL")));
-
-   if(capital<=0.0 || slPoints<=0.0)
+   if(capital<=0.0)
    {
-      SetLabelText("RES_MIN"," ",InpMinRiskColor);
-      SetLabelText("RES_MED"," ",InpMedRiskColor);
-      SetLabelText("RES_MAX"," ",InpMaxRiskColor);
-      SetLabelText("RES_NOTE","⚠ Capital and SL Distance must both be greater than 0.",InpErrorColor);
+      SetLabelText("RES_NOTE","⚠ Capital / Free Margin must be greater than 0.",InpErrorColor);
       ChartRedraw(0);
       return;
    }
 
-   double tickValue=SymbolInfoDouble(symbol,SYMBOL_TRADE_TICK_VALUE);
-   double tickSize =SymbolInfoDouble(symbol,SYMBOL_TRADE_TICK_SIZE);
-   double point    =SymbolInfoDouble(symbol,SYMBOL_POINT);
+   // Prefer a fresh tick over the cached SYMBOL_ASK value - right after
+   // SymbolSelect() the cached price can still be stale/zero for a symbol
+   // that wasn't already on the current chart.
+   MqlTick tick;
+   double price=0.0;
+   if(SymbolInfoTick(symbol,tick) && tick.ask>0.0)
+      price=tick.ask;
+   else
+      price=SymbolInfoDouble(symbol,SYMBOL_ASK);
+
    double volMin=SymbolInfoDouble(symbol,SYMBOL_VOLUME_MIN);
    double volMax=SymbolInfoDouble(symbol,SYMBOL_VOLUME_MAX);
    double volStep=SymbolInfoDouble(symbol,SYMBOL_VOLUME_STEP);
 
-   if(tickValue<=0.0 || tickSize<=0.0 || point<=0.0 || volStep<=0.0)
+   if(price<=0.0 || volStep<=0.0)
    {
+      SetLabelText("RES_LEV"," ",InpTextColor);
+      SetLabelText("RES_MARGIN"," ",InpAccentColor);
+      SetLabelText("RES_CONS"," ",InpConsColor);
+      SetLabelText("RES_MOD"," ",InpModColor);
+      SetLabelText("RES_AGG"," ",InpAggColor);
       SetLabelText("RES_NOTE","⚠ Trade specification unavailable for "+symbol+" - try again shortly.",InpErrorColor);
       ChartRedraw(0);
       return;
    }
 
-   double moneyPerPointPerLot=(tickValue/tickSize)*point;
-   double moneyPerLotAtSL=moneyPerPointPerLot*slPoints;
-   if(moneyPerLotAtSL<=0.0)
+   ResetLastError();
+   double marginPerLot=0.0;
+   if(!OrderCalcMargin(ORDER_TYPE_BUY,symbol,1.0,price,marginPerLot) || marginPerLot<=0.0)
    {
-      SetLabelText("RES_NOTE","⚠ Could not compute risk per lot - check SL distance.",InpErrorColor);
+      int err=GetLastError();
+      SetLabelText("RES_LEV"," ",InpTextColor);
+      SetLabelText("RES_MARGIN"," ",InpAccentColor);
+      SetLabelText("RES_CONS"," ",InpConsColor);
+      SetLabelText("RES_MOD"," ",InpModColor);
+      SetLabelText("RES_AGG"," ",InpAggColor);
+      SetLabelText("RES_NOTE","⚠ Could not compute margin for "+symbol+" (error #"+IntegerToString(err)+"). Check Market Watch / symbol permissions.",InpErrorColor);
       ChartRedraw(0);
       return;
    }
 
    int decimals=VolumeDecimals(volStep);
+   int leverage=(int)AccountInfoInteger(ACCOUNT_LEVERAGE);
+   string cur=AccountInfoString(ACCOUNT_CURRENCY);
+
    string warn="";
-   string minTxt=BuildTierText("MIN RISK",InpMinRiskPercent,capital,moneyPerLotAtSL,volMin,volMax,volStep,decimals,warn);
-   string medTxt=BuildTierText("MED RISK",InpMedRiskPercent,capital,moneyPerLotAtSL,volMin,volMax,volStep,decimals,warn);
-   string maxTxt=BuildTierText("MAX RISK",InpMaxRiskPercent,capital,moneyPerLotAtSL,volMin,volMax,volStep,decimals,warn);
+   double consBudget=capital*InpConservativePercent/100.0;
+   double modBudget =capital*InpModeratePercent/100.0;
+   double aggBudget =capital*InpAggressivePercent/100.0;
 
-   SetLabelText("RES_MIN",minTxt,InpMinRiskColor);
-   SetLabelText("RES_MED",medTxt,InpMedRiskColor);
-   SetLabelText("RES_MAX",maxTxt,InpMaxRiskColor);
+   string consTxt=BuildTierText("CONSERVATIVE",InpConservativePercent,consBudget,symbol,price,volMin,volMax,volStep,decimals,warn);
+   string modTxt =BuildTierText("MODERATE",InpModeratePercent,modBudget,symbol,price,volMin,volMax,volStep,decimals,warn);
+   string aggTxt =BuildTierText("AGGRESSIVE",InpAggressivePercent,aggBudget,symbol,price,volMin,volMax,volStep,decimals,warn);
 
-   string note="SL "+DoubleToString(slPoints,0)+" pts  •  "+DoubleToString(moneyPerLotAtSL,2)+" "+AccountInfoString(ACCOUNT_CURRENCY)+" risk per 1.00 lot";
-   if(warn!="") note+="   "+warn;
+   SetLabelText("RES_LEV","Account leverage: 1:"+IntegerToString(leverage),InpTextColor);
+   SetLabelText("RES_MARGIN","Margin per 1.00 lot: "+DoubleToString(marginPerLot,2)+" "+cur,InpAccentColor);
+   SetLabelText("RES_CONS",consTxt,InpConsColor);
+   SetLabelText("RES_MOD",modTxt,InpModColor);
+   SetLabelText("RES_AGG",aggTxt,InpAggColor);
+
+   string note=symbol+"  •  free margin used as capital base unless you typed your own";
+   if(warn!="") note=warn;
    SetLabelText("RES_NOTE",note,warn!=""?InpErrorColor:InpTextColor);
 
    ChartRedraw(0);
 }
 
-string BuildTierText(string label,double riskPercent,double capital,double moneyPerLotAtSL,
-                      double volMin,double volMax,double volStep,int decimals,string &warnOut)
-{
-   double riskMoney=capital*riskPercent/100.0;
-   double rawLots=riskMoney/moneyPerLotAtSL;
-   double lots=MathFloor(rawLots/volStep)*volStep;
-
-   string flag="";
-   if(lots<volMin) { lots=volMin; flag=" (min lot)"; warnOut=" ⚠ some tiers floored to broker min lot."; }
-   if(lots>volMax) { lots=volMax; flag=" (max lot)"; }
-   lots=NormalizeDouble(lots,8);
-
-   double actualRisk=lots*moneyPerLotAtSL;
-
-   return label+" ("+DoubleToString(riskPercent,2)+"%):  "+DoubleToString(lots,decimals)+" lots"+flag+
-          "   ~"+DoubleToString(actualRisk,2)+" "+AccountInfoString(ACCOUNT_CURRENCY);
-}
-
 //--------------------------- MT5 events -----------------------------
 int OnInit()
 {
-   IndicatorSetString(INDICATOR_SHORTNAME,PRODUCT_NAME);
    g_selectedIndex=-1;
    g_dropdownOpen=false;
    BuildGUI();
@@ -437,13 +510,18 @@ void OnDeinit(const int reason)
    ChartRedraw(0);
 }
 
+void OnTick()
+{
+   // No per-tick work needed - this EA only acts on button clicks.
+}
+
 void OnChartEvent(const int id,const long &lparam,const double &dparam,const string &sparam)
 {
    if(id==CHARTEVENT_OBJECT_CLICK)
    {
       if(sparam==PREFIX+"BTN_CLOSE")
       {
-         ChartIndicatorDelete(0,0,PRODUCT_NAME);
+         ExpertRemove();
          return;
       }
 
@@ -479,16 +557,10 @@ void OnChartEvent(const int id,const long &lparam,const double &dparam,const str
       }
    }
 
-   if(id==CHARTEVENT_OBJECT_ENDEDIT &&
-      (sparam==PREFIX+"EDIT_CAPITAL" || sparam==PREFIX+"EDIT_SL"))
+   if(id==CHARTEVENT_OBJECT_ENDEDIT && sparam==PREFIX+"EDIT_CAPITAL")
    {
       DoCalculate();
       return;
    }
-}
-
-int OnCalculate(const int rates_total,const int prev_calculated,const datetime &time[],const double &open[],const double &high[],const double &low[],const double &close[],const long &tick_volume[],const long &volume[],const int &spread[])
-{
-   return rates_total;
 }
 //+------------------------------------------------------------------+

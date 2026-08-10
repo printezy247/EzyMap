@@ -158,6 +158,7 @@ int g_structureDirection=0;
 int g_bullChochAge=9999, g_bearChochAge=9999;
 int g_bullRejectAge=9999, g_bearRejectAge=9999;
 string g_lastResult="";
+string g_indicatorShortName="";
 datetime g_resultTime=0;
 
 string g_historicalMarkerNames[];
@@ -830,6 +831,35 @@ color StateColor()
    return InpPanelHeaderColor;
 }
 
+// Small corner close button - tucked into the very top-right corner so it
+// doesn't take space from the dashboard/trade card. Re-open by
+// double-clicking the indicator in Navigator.
+void DrawCloseButton()
+{
+   string n=PREFIX+"CLOSE_BTN";
+   if(ObjectFind(0,n)<0)
+      ObjectCreate(0,n,OBJ_BUTTON,0,0,0);
+
+   ObjectSetInteger(0,n,OBJPROP_CORNER,CORNER_RIGHT_UPPER);
+   ObjectSetInteger(0,n,OBJPROP_XDISTANCE,4);
+   ObjectSetInteger(0,n,OBJPROP_YDISTANCE,4);
+   ObjectSetInteger(0,n,OBJPROP_XSIZE,24);
+   ObjectSetInteger(0,n,OBJPROP_YSIZE,24);
+   ObjectSetInteger(0,n,OBJPROP_BGCOLOR,C'40,14,18');
+   ObjectSetInteger(0,n,OBJPROP_COLOR,InpSellColor);
+   ObjectSetInteger(0,n,OBJPROP_BORDER_COLOR,InpPanelBorderColor);
+   ObjectSetInteger(0,n,OBJPROP_FONTSIZE,10);
+   ObjectSetString(0,n,OBJPROP_FONT,"Arial Bold");
+   ObjectSetString(0,n,OBJPROP_TEXT,"✕");
+   ObjectSetInteger(0,n,OBJPROP_STATE,false);
+   ObjectSetInteger(0,n,OBJPROP_SELECTABLE,false);
+   ObjectSetInteger(0,n,OBJPROP_SELECTED,false);
+   ObjectSetInteger(0,n,OBJPROP_HIDDEN,false);
+   ObjectSetInteger(0,n,OBJPROP_BACK,false);
+   ObjectSetInteger(0,n,OBJPROP_TIMEFRAMES,OBJ_ALL_PERIODS);
+   ObjectSetInteger(0,n,OBJPROP_ZORDER,150);
+}
+
 void DrawDashboard()
 {
    if(!InpShowDashboard)
@@ -872,7 +902,7 @@ void DrawDashboard()
    ObjectSetInteger(0,n,OBJPROP_CORNER,CORNER_RIGHT_UPPER);
    ObjectSetInteger(0,n,OBJPROP_ANCHOR,ANCHOR_RIGHT_UPPER);
    ObjectSetInteger(0,n,OBJPROP_XDISTANCE,18);
-   ObjectSetInteger(0,n,OBJPROP_YDISTANCE,8);
+   ObjectSetInteger(0,n,OBJPROP_YDISTANCE,32);
    ObjectSetInteger(0,n,OBJPROP_COLOR,clr);
    ObjectSetInteger(0,n,OBJPROP_FONTSIZE,9);
    ObjectSetString(0,n,OBJPROP_FONT,"Arial Bold");
@@ -899,7 +929,7 @@ void CardRow(int row,string value,color clr,bool bold=false)
    ObjectSetInteger(0,n,OBJPROP_CORNER,CORNER_RIGHT_UPPER);
    ObjectSetInteger(0,n,OBJPROP_ANCHOR,ANCHOR_RIGHT_UPPER);
    ObjectSetInteger(0,n,OBJPROP_XDISTANCE,30);
-   ObjectSetInteger(0,n,OBJPROP_YDISTANCE,50+row*17);
+   ObjectSetInteger(0,n,OBJPROP_YDISTANCE,70+row*17);
    ObjectSetInteger(0,n,OBJPROP_COLOR,clr);
    ObjectSetInteger(0,n,OBJPROP_FONTSIZE,8);
    ObjectSetString(0,n,OBJPROP_FONT,bold?"Arial Bold":"Arial");
@@ -925,7 +955,7 @@ void DrawTradeCard()
    {
       accent=(g_ready.direction=="BUY")?InpBuyColor:InpSellColor;
       rows=g_ready.counterTrend?6:5;
-      Panel("CARD_PANEL",14,38,300,34+rows*17,InpPanelColor,InpPanelBorderColor);
+      Panel("CARD_PANEL",14,58,300,34+rows*17,InpPanelColor,InpPanelBorderColor);
 
       CardRow(0,"SETUP READY • "+g_ready.direction,accent,true);
       CardRow(1,_Symbol+" • "+g_mode+" • "+g_tfLabel,InpNeutralColor,false);
@@ -939,7 +969,7 @@ void DrawTradeCard()
    {
       accent=(g_active.direction=="BUY")?InpBuyColor:InpSellColor;
       rows=7+(g_active.beArmed?1:0)+(g_active.counterTrend?1:0);
-      Panel("CARD_PANEL",14,38,300,34+rows*17,InpPanelColor,InpPanelBorderColor);
+      Panel("CARD_PANEL",14,58,300,34+rows*17,InpPanelColor,InpPanelBorderColor);
 
       int r=0;
       CardRow(r++,"TRADE ACTIVE • "+g_active.direction,accent,true);
@@ -959,7 +989,7 @@ void DrawTradeCard()
    {
       accent=(g_state==ST_TP)?InpBuyColor:(g_state==ST_SL?InpSellColor:InpNeutralColor);
       rows=2;
-      Panel("CARD_PANEL",14,38,300,70,InpPanelColor,InpPanelBorderColor);
+      Panel("CARD_PANEL",14,58,300,70,InpPanelColor,InpPanelBorderColor);
       CardRow(0,g_lastResult,accent,true);
       CardRow(1,_Symbol+" • "+g_tfLabel,InpNeutralColor,false);
    }
@@ -972,7 +1002,7 @@ void DrawTradeCard()
       }
 
       rows=3;
-      Panel("CARD_PANEL",14,38,300,86,InpPanelColor,InpPanelBorderColor);
+      Panel("CARD_PANEL",14,58,300,86,InpPanelColor,InpPanelBorderColor);
       CardRow(0,"MONITORING",InpNeutralColor,true);
       CardRow(1,_Symbol+" • "+g_mode+" • "+g_tfLabel,InpNeutralColor,false);
       CardRow(2,"WAITING FOR VALID SETUP",InpNeutralColor,false);
@@ -1610,7 +1640,8 @@ int OnInit()
       Alert(PRODUCT_NAME+" "+PRODUCT_VERSION+": use M1, M5, M15, M30, H1 or H4 chart.");
       return INIT_FAILED;
    }
-   IndicatorSetString(INDICATOR_SHORTNAME,PRODUCT_NAME+" "+PRODUCT_VERSION+" MT5 PHASE2 BRIDGE");
+   g_indicatorShortName=PRODUCT_NAME+" "+PRODUCT_VERSION+" MT5 PHASE2 BRIDGE";
+   IndicatorSetString(INDICATOR_SHORTNAME,g_indicatorShortName);
    ZeroMemory(g_ready); ZeroMemory(g_active); g_ready.direction="NONE"; g_active.direction="NONE";
    ApplyPremiumChartTheme();
 
@@ -1618,6 +1649,7 @@ int OnInit()
    g_biasText="NEUTRAL";
    DrawDashboard();
    DrawTradeCard();
+   DrawCloseButton();
    PublishPhase2Bridge();
    ChartRedraw(0);
 
@@ -1648,6 +1680,7 @@ void OnTimer()
    DrawMap(TimeCurrent());
    DrawDashboard();
    DrawTradeCard();
+   DrawCloseButton();
    PublishPhase2Bridge();
    ChartRedraw(0);
 }
@@ -1657,6 +1690,7 @@ int OnCalculate(const int rates_total,const int prev_calculated,const datetime &
    // Keep UI visible even while history is still loading.
    DrawDashboard();
    DrawTradeCard();
+   DrawCloseButton();
    ChartRedraw(0);
 
    if(rates_total<100) return 0;
@@ -1670,8 +1704,18 @@ int OnCalculate(const int rates_total,const int prev_calculated,const datetime &
    DrawMap(TimeCurrent());
    DrawDashboard();
    DrawTradeCard();
+   DrawCloseButton();
    PublishPhase2Bridge();
    ChartRedraw(0);
    return rates_total;
+}
+
+void OnChartEvent(const int id,const long &lparam,const double &dparam,const string &sparam)
+{
+   if(id==CHARTEVENT_OBJECT_CLICK && sparam==PREFIX+"CLOSE_BTN")
+   {
+      ChartIndicatorDelete(0,0,g_indicatorShortName);
+      return;
+   }
 }
 //+------------------------------------------------------------------+

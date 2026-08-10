@@ -1,16 +1,12 @@
 //+------------------------------------------------------------------+
-//| EzyMap Lot Size Calculator                                        |
-//| On-chart GUI: pick a pair from the dropdown, type Capital and SL  |
-//| Distance (points), click CALCULATE - get Min/Med/Max risk lots.  |
+//| EzyMap Risk:Reward & Breakeven Calculator                         |
+//| On-chart GUI: pick Direction + Pair, fill Entry/SL/TP/Lot/        |
+//| Commission, click CALCULATE - get R:R, win-rate and true BE price.|
 //+------------------------------------------------------------------+
 #property copyright "EzyMap"
-#property version   "4.00"
+#property version   "1.00"
 #property indicator_chart_window
 #property indicator_plots 0
-
-input double InpMinRiskPercent = 0.5;    // Min risk tier (% of capital)
-input double InpMedRiskPercent = 10.0;   // Medium risk tier (% of capital)
-input double InpMaxRiskPercent = 25.0;   // Max risk tier (% of capital)
 
 input color  InpPanelColor       = C'7,10,14';
 input color  InpPanelBorderColor = C'56,65,76';
@@ -25,25 +21,20 @@ input color  InpSymBtnBorder     = C'56,65,76';
 input color  InpSymBtnTextColor  = C'204,211,218';
 input color  InpSymBtnSelColor   = C'237,185,58';
 input color  InpSymBtnSelText    = C'7,10,14';
-input color  InpMinRiskColor     = C'52,211,176';
-input color  InpMedRiskColor     = C'237,185,58';
-input color  InpMaxRiskColor     = C'235,72,96';
+input color  InpBuyColor         = C'0,208,142';
+input color  InpSellColor        = C'235,72,96';
 input color  InpErrorColor       = C'235,72,96';
 input color  InpCloseBtnColor    = C'40,14,18';
 input color  InpCloseBtnTextColor= C'235,72,96';
 
-#define PRODUCT_NAME "EzyMap Lot Size Calculator"
-string PREFIX="EZLOT_";
+#define PRODUCT_NAME "EzyMap Risk-Reward Calculator"
+string PREFIX="EZRR_";
 
-int PX=14;   // panel x
-int PY=38;   // panel y
-int PW=332;  // panel width
-int PH=406;  // panel height (closed state)
+int PX=14;
+int PY=38;
+int PW=332;
+int PH=570;
 
-// Instrument list: friendly label -> alias key used to resolve the broker's
-// actual symbol name (handles suffixes like XAUUSD.sc, BTCUSD-ECN, etc).
-// Forex = every pair combination across USD/GBP/EUR/JPY/AUD/CAD/CHF (21),
-// plus Gold, Silver, Oil, US30 and BTCUSD (5) = 26 total.
 #define PAIR_COUNT 26
 string g_aliasKeys[PAIR_COUNT] =
 {
@@ -65,6 +56,7 @@ string g_aliasLabels[PAIR_COUNT] =
 };
 int g_selectedIndex=-1;
 bool g_dropdownOpen=false;
+int g_direction=-1; // 0=BUY, 1=SELL
 
 //----------------------------- Helpers ------------------------------
 void SetCommon(string n,int zorder=100)
@@ -117,10 +109,8 @@ void SetLabelText(string suffix,string text,color clr)
    ObjectSetInteger(0,n,OBJPROP_COLOR,clr);
 }
 
-// NOTE: SELECTABLE must be FALSE on edit/button objects. If it is TRUE,
-// the first click just "selects" the object (drag handles) instead of
-// focusing it for typing/clicking - this was the root cause of an
-// earlier "can't type a value" bug.
+// SELECTABLE must stay FALSE on edit/button objects, otherwise the first
+// click just "selects" the object instead of focusing/clicking it.
 void MakeEdit(string suffix,int x,int y,int w,int h,string defaultText)
 {
    string n=PREFIX+suffix;
@@ -174,18 +164,12 @@ string TrimBoth(string s)
    return s;
 }
 
-int VolumeDecimals(double step)
-{
-   if(step>=1.0) return 0;
-   if(step>=0.1) return 1;
-   return 2;
-}
-
 //------------------------------ Layout -------------------------------
+#define DIR_Y 100
 #define HEAD_X 26
-#define HEAD_Y 106
+#define HEAD_Y 148
 #define HEAD_W 280
-#define HEAD_H 28
+#define HEAD_H 26
 
 #define DD_COLS 2
 #define DD_ITEM_W 136
@@ -199,32 +183,56 @@ void BuildGUI()
 {
    MakeRect("PANEL",PX,PY,PW,PH,InpPanelColor,InpPanelBorderColor,50);
 
-   // Small corner close button - tucked into the panel's top-right corner
-   // so it doesn't eat a full row of space. Re-open by double-clicking the
-   // indicator in Navigator.
+   // Small corner close button - re-open by double-clicking the indicator
+   // in Navigator, no need for it to take a full row.
    MakeButton("BTN_CLOSE",PX+PW-38,PY+6,30,26,"✕",InpCloseBtnColor,InpCloseBtnTextColor,11);
 
-   MakeLabel("TITLE",26,48,"EZYMAP LOT SIZE CALCULATOR",InpAccentColor,11,true);
-   MakeLabel("SUB",26,68,"1) Pick a pair  2) Fill Capital & SL  3) Calculate",InpTextColor,8,false);
+   MakeLabel("TITLE",26,48,"EZYMAP RISK:REWARD & BREAKEVEN CALC",InpAccentColor,10,true);
+   MakeLabel("SUB",26,66,"1) Direction+Pair  2) Prices/Lot  3) Calculate",InpTextColor,8,false);
 
-   MakeLabel("LBL_PAIR",HEAD_X,90,"SELECT PAIR",InpTextColor,8,false);
+   MakeLabel("LBL_DIR",26,86,"DIRECTION",InpTextColor,8,false);
+   MakeButton("BTN_BUY",26,DIR_Y,136,26,"BUY",InpSymBtnColor,InpSymBtnTextColor,10);
+   MakeButton("BTN_SELL",170,DIR_Y,136,26,"SELL",InpSymBtnColor,InpSymBtnTextColor,10);
+
+   MakeLabel("LBL_PAIR",HEAD_X,134,"SELECT PAIR",InpTextColor,8,false);
    MakeButton("BTN_HEAD",HEAD_X,HEAD_Y,HEAD_W,HEAD_H,"TAP TO SELECT PAIR   ▾",InpEditBgColor,InpTextColor,9);
+   MakeLabel("SEL_NOTE",26,182,"No pair selected yet.",InpTextColor,8,false);
 
-   MakeLabel("SEL_NOTE",26,142,"No pair selected yet.",InpTextColor,8,false);
+   MakeLabel("LBL_ENTRY",26,200,"ENTRY PRICE",InpTextColor,8,false);
+   MakeEdit("EDIT_ENTRY",26,214,280,22,"0.00000");
 
-   MakeLabel("LBL_CAP",26,166,"CAPITAL / BALANCE ($)",InpTextColor,8,false);
-   MakeEdit("EDIT_CAPITAL",26,182,280,26,DoubleToString(AccountInfoDouble(ACCOUNT_BALANCE),2));
+   MakeLabel("LBL_SL",26,236,"STOP LOSS PRICE",InpTextColor,8,false);
+   MakeEdit("EDIT_SL",26,250,280,22,"0.00000");
 
-   MakeLabel("LBL_SL",26,216,"STOP LOSS DISTANCE (POINTS)",InpTextColor,8,false);
-   MakeEdit("EDIT_SL",26,232,280,26,"200");
+   MakeLabel("LBL_TP",26,272,"TAKE PROFIT PRICE",InpTextColor,8,false);
+   MakeEdit("EDIT_TP",26,286,280,22,"0.00000");
 
-   MakeButton("BTN_CALC",26,266,280,32,"CALCULATE LOT SIZE",InpButtonColor,InpButtonTextColor,10);
+   MakeLabel("LBL_LOT",26,308,"LOT SIZE",InpTextColor,8,false);
+   MakeEdit("EDIT_LOT",26,322,280,22,"0.01");
 
-   MakeLabel("RES_HEAD",26,310,"RESULTS",InpTextColor,9,true);
-   MakeLabel("RES_MIN",26,328," ",InpMinRiskColor,9,false);
-   MakeLabel("RES_MED",26,346," ",InpMedRiskColor,9,false);
-   MakeLabel("RES_MAX",26,364," ",InpMaxRiskColor,9,false);
-   MakeLabel("RES_NOTE",26,382,"Pick a pair above to begin.",InpTextColor,8,false);
+   MakeLabel("LBL_COMM",26,344,"COMMISSION (round turn, $ per lot)",InpTextColor,8,false);
+   MakeEdit("EDIT_COMM",26,358,280,22,"0");
+
+   MakeButton("BTN_CALC",26,388,280,28,"CALCULATE",InpButtonColor,InpButtonTextColor,10);
+
+   MakeLabel("RES_HEAD",26,430,"RESULTS",InpTextColor,9,true);
+   MakeLabel("RES_RISK",26,446," ",InpSellColor,9,false);
+   MakeLabel("RES_REWARD",26,462," ",InpBuyColor,9,false);
+   MakeLabel("RES_RR",26,478," ",InpAccentColor,9,true);
+   MakeLabel("RES_WINRATE",26,494," ",InpTextColor,8,false);
+   MakeLabel("RES_BE",26,510," ",InpAccentColor,9,false);
+   MakeLabel("RES_NET",26,526," ",InpTextColor,8,false);
+   MakeLabel("RES_NOTE",26,542,"Pick Direction + Pair above to begin.",InpTextColor,8,false);
+
+   RefreshDirButtons();
+}
+
+void RefreshDirButtons()
+{
+   ObjectSetInteger(0,PREFIX+"BTN_BUY",OBJPROP_BGCOLOR,(g_direction==0)?InpBuyColor:InpSymBtnColor);
+   ObjectSetInteger(0,PREFIX+"BTN_BUY",OBJPROP_COLOR,(g_direction==0)?InpPanelColor:InpSymBtnTextColor);
+   ObjectSetInteger(0,PREFIX+"BTN_SELL",OBJPROP_BGCOLOR,(g_direction==1)?InpSellColor:InpSymBtnColor);
+   ObjectSetInteger(0,PREFIX+"BTN_SELL",OBJPROP_COLOR,(g_direction==1)?InpPanelColor:InpSymBtnTextColor);
 }
 
 void ItemCoords(int idx,int &x,int &y)
@@ -268,8 +276,6 @@ void CloseDropdown()
 }
 
 //------------------------- Symbol resolution -------------------------
-// Different brokers suffix/rename symbols (XAUUSD.sc, BTCUSD-ECN, US30.cash...).
-// Resolve the alias to whatever matching symbol the broker actually offers.
 void CandidatesFor(string alias,string &out[])
 {
    if(alias=="XAUUSD")      { string a[]={"XAUUSD","GOLD"}; ArrayCopy(out,a); }
@@ -296,7 +302,6 @@ string ResolveSymbol(string alias)
 
    int total=SymbolsTotal(false);
 
-   // Pass 1: exact match
    for(int i=0;i<total;i++)
    {
       string name=SymbolName(i,false);
@@ -304,7 +309,6 @@ string ResolveSymbol(string alias)
       for(int c=0;c<ArraySize(upperCandidates);c++)
          if(upperName==upperCandidates[c]) return name;
    }
-   // Pass 2: name starts with candidate
    for(int i=0;i<total;i++)
    {
       string name=SymbolName(i,false);
@@ -312,7 +316,6 @@ string ResolveSymbol(string alias)
       for(int c=0;c<ArraySize(upperCandidates);c++)
          if(StringFind(upperName,upperCandidates[c])==0) return name;
    }
-   // Pass 3: name contains candidate anywhere
    for(int i=0;i<total;i++)
    {
       string name=SymbolName(i,false);
@@ -324,40 +327,63 @@ string ResolveSymbol(string alias)
 }
 
 //----------------------------- Calculation ---------------------------
+string PriceText(string symbol,double v)
+{
+   int digits=(int)SymbolInfoInteger(symbol,SYMBOL_DIGITS);
+   return DoubleToString(v,digits);
+}
+
 void DoCalculate()
 {
+   if(g_direction<0)
+   {
+      SetLabelText("RES_NOTE","⚠ Please pick BUY or SELL first.",InpErrorColor);
+      ChartRedraw(0);
+      return;
+   }
    if(g_selectedIndex<0)
    {
-      SetLabelText("RES_NOTE","⚠ Please select a pair from the dropdown above first.",InpErrorColor);
+      SetLabelText("RES_NOTE","⚠ Please select a pair from the dropdown above.",InpErrorColor);
       ChartRedraw(0);
       return;
    }
 
    string alias=g_aliasKeys[g_selectedIndex];
    string symbol=ResolveSymbol(alias);
-
    if(symbol=="" || !SymbolSelect(symbol,true))
    {
       SetLabelText("SEL_NOTE","⚠ Could not find a broker symbol for "+g_aliasLabels[g_selectedIndex]+".",InpErrorColor);
-      SetLabelText("RES_MIN"," ",InpMinRiskColor);
-      SetLabelText("RES_MED"," ",InpMedRiskColor);
-      SetLabelText("RES_MAX"," ",InpMaxRiskColor);
       SetLabelText("RES_NOTE","Add it to Market Watch manually and try again.",InpErrorColor);
       ChartRedraw(0);
       return;
    }
-
    SetLabelText("SEL_NOTE","Selected: "+g_aliasLabels[g_selectedIndex]+"  →  broker symbol: "+symbol,InpAccentColor);
 
-   double capital=StringToDouble(TrimBoth(GetEditText("EDIT_CAPITAL")));
-   double slPoints=StringToDouble(TrimBoth(GetEditText("EDIT_SL")));
+   bool isBuy=(g_direction==0);
+   double entry=StringToDouble(TrimBoth(GetEditText("EDIT_ENTRY")));
+   double sl   =StringToDouble(TrimBoth(GetEditText("EDIT_SL")));
+   double tp   =StringToDouble(TrimBoth(GetEditText("EDIT_TP")));
+   double lots =StringToDouble(TrimBoth(GetEditText("EDIT_LOT")));
+   double commPerLot=StringToDouble(TrimBoth(GetEditText("EDIT_COMM")));
 
-   if(capital<=0.0 || slPoints<=0.0)
+   if(entry<=0.0 || sl<=0.0 || tp<=0.0 || lots<=0.0)
    {
-      SetLabelText("RES_MIN"," ",InpMinRiskColor);
-      SetLabelText("RES_MED"," ",InpMedRiskColor);
-      SetLabelText("RES_MAX"," ",InpMaxRiskColor);
-      SetLabelText("RES_NOTE","⚠ Capital and SL Distance must both be greater than 0.",InpErrorColor);
+      SetLabelText("RES_NOTE","⚠ Entry, SL, TP and Lot Size must all be greater than 0.",InpErrorColor);
+      ChartRedraw(0);
+      return;
+   }
+
+   bool slValid=isBuy?(sl<entry):(sl>entry);
+   bool tpValid=isBuy?(tp>entry):(tp<entry);
+   if(!slValid)
+   {
+      SetLabelText("RES_NOTE","⚠ Stop Loss is on the wrong side of Entry for a "+(isBuy?"BUY":"SELL")+".",InpErrorColor);
+      ChartRedraw(0);
+      return;
+   }
+   if(!tpValid)
+   {
+      SetLabelText("RES_NOTE","⚠ Take Profit is on the wrong side of Entry for a "+(isBuy?"BUY":"SELL")+".",InpErrorColor);
       ChartRedraw(0);
       return;
    }
@@ -365,11 +391,8 @@ void DoCalculate()
    double tickValue=SymbolInfoDouble(symbol,SYMBOL_TRADE_TICK_VALUE);
    double tickSize =SymbolInfoDouble(symbol,SYMBOL_TRADE_TICK_SIZE);
    double point    =SymbolInfoDouble(symbol,SYMBOL_POINT);
-   double volMin=SymbolInfoDouble(symbol,SYMBOL_VOLUME_MIN);
-   double volMax=SymbolInfoDouble(symbol,SYMBOL_VOLUME_MAX);
-   double volStep=SymbolInfoDouble(symbol,SYMBOL_VOLUME_STEP);
 
-   if(tickValue<=0.0 || tickSize<=0.0 || point<=0.0 || volStep<=0.0)
+   if(tickValue<=0.0 || tickSize<=0.0 || point<=0.0)
    {
       SetLabelText("RES_NOTE","⚠ Trade specification unavailable for "+symbol+" - try again shortly.",InpErrorColor);
       ChartRedraw(0);
@@ -377,47 +400,37 @@ void DoCalculate()
    }
 
    double moneyPerPointPerLot=(tickValue/tickSize)*point;
-   double moneyPerLotAtSL=moneyPerPointPerLot*slPoints;
-   if(moneyPerLotAtSL<=0.0)
-   {
-      SetLabelText("RES_NOTE","⚠ Could not compute risk per lot - check SL distance.",InpErrorColor);
-      ChartRedraw(0);
-      return;
-   }
 
-   int decimals=VolumeDecimals(volStep);
-   string warn="";
-   string minTxt=BuildTierText("MIN RISK",InpMinRiskPercent,capital,moneyPerLotAtSL,volMin,volMax,volStep,decimals,warn);
-   string medTxt=BuildTierText("MED RISK",InpMedRiskPercent,capital,moneyPerLotAtSL,volMin,volMax,volStep,decimals,warn);
-   string maxTxt=BuildTierText("MAX RISK",InpMaxRiskPercent,capital,moneyPerLotAtSL,volMin,volMax,volStep,decimals,warn);
+   double riskPoints=MathAbs(entry-sl)/point;
+   double rewardPoints=MathAbs(tp-entry)/point;
+   double riskMoney=riskPoints*moneyPerPointPerLot*lots;
+   double rewardMoney=rewardPoints*moneyPerPointPerLot*lots;
+   double rr=(riskPoints>0.0)?rewardPoints/riskPoints:0.0;
+   double winRate=(riskPoints+rewardPoints>0.0)?riskPoints/(riskPoints+rewardPoints)*100.0:0.0;
 
-   SetLabelText("RES_MIN",minTxt,InpMinRiskColor);
-   SetLabelText("RES_MED",medTxt,InpMedRiskColor);
-   SetLabelText("RES_MAX",maxTxt,InpMaxRiskColor);
+   double commissionTotal=commPerLot*lots;
+   double commPoints=(moneyPerPointPerLot*lots>0.0)?commissionTotal/(moneyPerPointPerLot*lots):0.0;
+   double bePrice=isBuy?(entry+commPoints*point):(entry-commPoints*point);
 
-   string note="SL "+DoubleToString(slPoints,0)+" pts  •  "+DoubleToString(moneyPerLotAtSL,2)+" "+AccountInfoString(ACCOUNT_CURRENCY)+" risk per 1.00 lot";
-   if(warn!="") note+="   "+warn;
-   SetLabelText("RES_NOTE",note,warn!=""?InpErrorColor:InpTextColor);
+   double netRewardMoney=rewardMoney-commissionTotal;
+   double netRiskMoney=riskMoney+commissionTotal;
+   double netRR=(netRiskMoney>0.0)?netRewardMoney/netRiskMoney:0.0;
+   double netWinRate=(netRewardMoney+netRiskMoney>0.0)?netRiskMoney/(netRewardMoney+netRiskMoney)*100.0:0.0;
+
+   string cur=AccountInfoString(ACCOUNT_CURRENCY);
+
+   SetLabelText("RES_RISK","RISK:     "+DoubleToString(riskPoints,0)+" pts   ~"+DoubleToString(riskMoney,2)+" "+cur,InpSellColor);
+   SetLabelText("RES_REWARD","REWARD:   "+DoubleToString(rewardPoints,0)+" pts   ~"+DoubleToString(rewardMoney,2)+" "+cur,InpBuyColor);
+   SetLabelText("RES_RR","R:R  1 : "+DoubleToString(rr,2),InpAccentColor);
+   SetLabelText("RES_WINRATE","Breakeven win rate needed: "+DoubleToString(winRate,1)+"%",InpTextColor);
+   SetLabelText("RES_BE","TRUE BE PRICE (w/ commission): "+PriceText(symbol,bePrice),InpAccentColor);
+   SetLabelText("RES_NET","NET (after commission): R:R 1:"+DoubleToString(netRR,2)+"   win rate "+DoubleToString(netWinRate,1)+"%",InpTextColor);
+
+   int spreadPts=(int)SymbolInfoInteger(symbol,SYMBOL_SPREAD);
+   string note=symbol+"  •  current spread "+IntegerToString(spreadPts)+" pts (already reflected in your live P/L, not added again)";
+   SetLabelText("RES_NOTE",note,InpTextColor);
 
    ChartRedraw(0);
-}
-
-string BuildTierText(string label,double riskPercent,double capital,double moneyPerLotAtSL,
-                      double volMin,double volMax,double volStep,int decimals,string &warnOut)
-{
-   double riskMoney=capital*riskPercent/100.0;
-   double rawLots=riskMoney/moneyPerLotAtSL;
-   double lots=MathFloor(rawLots/volStep)*volStep;
-
-   string flag="";
-   if(lots<volMin) { lots=volMin; flag=" (min lot)"; warnOut=" ⚠ some tiers floored to broker min lot."; }
-   if(lots>volMax) { lots=volMax; flag=" (max lot)"; }
-   lots=NormalizeDouble(lots,8);
-
-   double actualRisk=lots*moneyPerLotAtSL;
-
-   return label+" ("+DoubleToString(riskPercent,2)+"%):  "+DoubleToString(lots,decimals)+" lots"+flag+
-          "   ~"+DoubleToString(actualRisk,2)+" "+AccountInfoString(ACCOUNT_CURRENCY);
 }
 
 //--------------------------- MT5 events -----------------------------
@@ -426,6 +439,7 @@ int OnInit()
    IndicatorSetString(INDICATOR_SHORTNAME,PRODUCT_NAME);
    g_selectedIndex=-1;
    g_dropdownOpen=false;
+   g_direction=-1;
    BuildGUI();
    ChartRedraw(0);
    return INIT_SUCCEEDED;
@@ -444,6 +458,22 @@ void OnChartEvent(const int id,const long &lparam,const double &dparam,const str
       if(sparam==PREFIX+"BTN_CLOSE")
       {
          ChartIndicatorDelete(0,0,PRODUCT_NAME);
+         return;
+      }
+
+      if(sparam==PREFIX+"BTN_BUY")
+      {
+         ObjectSetInteger(0,sparam,OBJPROP_STATE,false);
+         g_direction=0;
+         RefreshDirButtons();
+         return;
+      }
+
+      if(sparam==PREFIX+"BTN_SELL")
+      {
+         ObjectSetInteger(0,sparam,OBJPROP_STATE,false);
+         g_direction=1;
+         RefreshDirButtons();
          return;
       }
 
@@ -472,7 +502,6 @@ void OnChartEvent(const int id,const long &lparam,const double &dparam,const str
                ObjectSetInteger(0,n,OBJPROP_STATE,false);
                g_selectedIndex=i;
                CloseDropdown();
-               DoCalculate();
                return;
             }
          }
@@ -480,7 +509,8 @@ void OnChartEvent(const int id,const long &lparam,const double &dparam,const str
    }
 
    if(id==CHARTEVENT_OBJECT_ENDEDIT &&
-      (sparam==PREFIX+"EDIT_CAPITAL" || sparam==PREFIX+"EDIT_SL"))
+      (sparam==PREFIX+"EDIT_ENTRY" || sparam==PREFIX+"EDIT_SL" || sparam==PREFIX+"EDIT_TP" ||
+       sparam==PREFIX+"EDIT_LOT" || sparam==PREFIX+"EDIT_COMM"))
    {
       DoCalculate();
       return;
