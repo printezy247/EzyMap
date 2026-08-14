@@ -47,6 +47,43 @@ app.get('/license/check', (req, res) => {
 
 app.get('/health', (req, res) => res.send('ok'));
 
+// ---------------------------------------------------------------------
+// Admin API - lets admin.js manage subscriptions on a DEPLOYED server
+// (not just the copy of data/subscriptions.json on your own computer).
+// Protected by ADMIN_TOKEN (set in .env) - without it these routes are
+// disabled entirely, so a server deployed without an ADMIN_TOKEN simply
+// can't be managed remotely (admin.js falls back to local-file mode).
+// ---------------------------------------------------------------------
+app.use(express.json());
+
+function requireAdmin(req, res, next) {
+  const token = process.env.ADMIN_TOKEN;
+  if (!token) return res.status(503).json({ ok: false, error: 'Admin API disabled - set ADMIN_TOKEN in .env on the server.' });
+  if (req.get('Authorization') !== `Bearer ${token}`) return res.status(401).json({ ok: false, error: 'Unauthorized.' });
+  next();
+}
+
+app.post('/admin/grant', requireAdmin, (req, res) => {
+  try {
+    const { account, product, tier, note } = req.body || {};
+    const record = store.grant(account, product, tier, note);
+    res.json({ ok: true, record });
+  } catch (err) {
+    res.status(400).json({ ok: false, error: err.message });
+  }
+});
+
+app.post('/admin/revoke', requireAdmin, (req, res) => {
+  const { account, product } = req.body || {};
+  const revoked = store.revoke(account, product);
+  res.json({ ok: true, revoked });
+});
+
+app.get('/admin/list', requireAdmin, (req, res) => {
+  const { account } = req.query;
+  res.json({ ok: true, data: account ? (store.listAccount(account) || {}) : store.listAll() });
+});
+
 app.listen(PORT, () => {
   console.log(`EzyMap License Server listening on port ${PORT}`);
   console.log(`Known scripts: ${ALL_SCRIPTS.length}`);

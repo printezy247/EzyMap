@@ -71,6 +71,25 @@ Subscriptions are stored in `data/subscriptions.json` (gitignored - this
 is real customer data, back it up separately, e.g. a periodic `scp`/cron
 copy off the server).
 
+### Managing a DEPLOYED server from your own computer
+
+By default `node admin.js ...` edits the local `data/subscriptions.json`
+file on whichever computer you run it from. That's only useful for
+testing - once the server is deployed elsewhere, that's a different file
+on a different machine.
+
+To manage the live server instead, add two lines to your local `.env`:
+
+```
+EZYMAP_SERVER_URL=https://your-deployed-url
+ADMIN_TOKEN=<same token you set in the deployed server's .env>
+```
+
+Every `node admin.js grant/revoke/list/check` command then talks to the
+live server over HTTPS instead of touching a local file - same commands,
+same output, just pointed at production. See the step-by-step deployment
+guide below for exactly where this fits in.
+
 ## 3. Wire it into MT5
 
 Every `.mq5` file already `#include`s `EzyMapLicense.mqh` (in the repo
@@ -106,6 +125,28 @@ If invalid (or the server is unreachable, or the WebRequest URL isn't
 whitelisted yet), the tool shows a small on-chart "License Required"
 panel with the reason and its own close button instead of its normal
 GUI - it does not silently fail or crash.
+
+## 4. Full beginner walkthrough (deploying on Railway)
+
+See the step-by-step guide pinned in the project chat, or follow this
+summary:
+
+1. Railway.app -> sign in with GitHub -> New Project -> Deploy from GitHub
+   repo -> pick your EzyMap repo.
+2. Service Settings -> set **Root Directory** to `EzyMapLicenseServer`.
+3. Service Variables -> add `ADMIN_TOKEN` (a long random string).
+4. Service -> Volumes -> New Volume -> mount path `/app/data` (keeps
+   `subscriptions.json` alive across restarts/redeploys).
+5. Settings -> Networking -> Generate Domain -> gives you a free
+   `https://....up.railway.app` URL with HTTPS already handled.
+6. Visit `https://your-url/health` in a browser - should show `ok`.
+7. In your OWN computer's `EzyMapLicenseServer/.env`, set
+   `EZYMAP_SERVER_URL` to that URL and `ADMIN_TOKEN` to the same value
+   from step 3 - now `node admin.js grant ...` manages the live server.
+8. Set `InpEzyLicenseServerURL` to that URL in every tool before
+   compiling the `.ex5` you distribute.
+9. Tell customers to whitelist that URL under Tools > Options > Expert
+   Advisors > Allow WebRequest for listed URL.
 
 ## Adding a new tool later
 
