@@ -8,6 +8,9 @@
 #property indicator_chart_window
 #property indicator_plots 0
 
+#include <EzyMapLicense.mqh>
+#define SCRIPT_ID "EzyMap_Scalper"
+
 //------------------------------ Inputs ------------------------------
 input int    InpDirectionHistory       = 64;
 input int    InpSupportHistory         = 40;
@@ -1642,6 +1645,14 @@ int OnInit()
    }
    g_indicatorShortName=PRODUCT_NAME+" "+PRODUCT_VERSION+" MT5 PHASE2 BRIDGE";
    IndicatorSetString(INDICATOR_SHORTNAME,g_indicatorShortName);
+
+   if(!EzyMapLicenseGate(SCRIPT_ID,PREFIX,PRODUCT_NAME))
+   {
+      EventSetTimer(1);
+      ChartRedraw(0);
+      return INIT_SUCCEEDED;
+   }
+
    ZeroMemory(g_ready); ZeroMemory(g_active); g_ready.direction="NONE"; g_active.direction="NONE";
    ApplyPremiumChartTheme();
 
@@ -1670,6 +1681,8 @@ void OnDeinit(const int reason)
 
 void OnTimer()
 {
+   if(!EzyMapLicenseRecheck(SCRIPT_ID,PREFIX,PRODUCT_NAME)) return;
+
    // UI heartbeat independent from OnCalculate / tick availability.
    // Also re-attempt map construction after MT5 finishes loading higher-TF history.
    double livePrice=SymbolInfoDouble(_Symbol,SYMBOL_BID);
@@ -1687,6 +1700,8 @@ void OnTimer()
 
 int OnCalculate(const int rates_total,const int prev_calculated,const datetime &time[],const double &open[],const double &high[],const double &low[],const double &close[],const long &tick_volume[],const long &volume[],const int &spread[])
 {
+   if(!EzyMapLicenseRecheck(SCRIPT_ID,PREFIX,PRODUCT_NAME)) return 0;
+
    // Keep UI visible even while history is still loading.
    DrawDashboard();
    DrawTradeCard();
@@ -1712,6 +1727,11 @@ int OnCalculate(const int rates_total,const int prev_calculated,const datetime &
 
 void OnChartEvent(const int id,const long &lparam,const double &dparam,const string &sparam)
 {
+   if(id==CHARTEVENT_OBJECT_CLICK && EzyMapIsLicenseCloseClick(PREFIX,sparam))
+   {
+      ChartIndicatorDelete(0,0,g_indicatorShortName);
+      return;
+   }
    if(id==CHARTEVENT_OBJECT_CLICK && sparam==PREFIX+"CLOSE_BTN")
    {
       ChartIndicatorDelete(0,0,g_indicatorShortName);

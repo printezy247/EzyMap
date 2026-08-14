@@ -9,6 +9,9 @@
 #property indicator_chart_window
 #property indicator_plots 0
 
+#include <EzyMapLicense.mqh>
+#define SCRIPT_ID "EzyMap_EquityCurveLogger"
+
 input int    InpLogIntervalMinutes = 15;    // How often to append a snapshot row
 input string InpFileNamePrefix     = "EzyMap_EquityCurve";
 
@@ -220,6 +223,12 @@ void RefreshPanel()
 int OnInit()
 {
    IndicatorSetString(INDICATOR_SHORTNAME,PRODUCT_NAME);
+   if(!EzyMapLicenseGate(SCRIPT_ID,PREFIX,PRODUCT_NAME))
+   {
+      EventSetTimer(1);
+      ChartRedraw(0);
+      return INIT_SUCCEEDED;
+   }
 
    g_fileName=InpFileNamePrefix+"_"+IntegerToString((int)AccountInfoInteger(ACCOUNT_LOGIN))+".csv";
    EnsureFileHeader();
@@ -247,12 +256,19 @@ void OnDeinit(const int reason)
 
 void OnTimer()
 {
+   if(!EzyMapLicenseRecheck(SCRIPT_ID,PREFIX,PRODUCT_NAME)) return;
    RefreshPanel();
 }
 
 void OnChartEvent(const int id,const long &lparam,const double &dparam,const string &sparam)
 {
    if(id!=CHARTEVENT_OBJECT_CLICK) return;
+
+   if(EzyMapIsLicenseCloseClick(PREFIX,sparam))
+   {
+      ChartIndicatorDelete(0,0,PRODUCT_NAME);
+      return;
+   }
 
    if(sparam==PREFIX+"BTN_CLOSE")
    {
