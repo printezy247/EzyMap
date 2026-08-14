@@ -13,7 +13,10 @@
 #property strict
 
 #include <Trade/Trade.mqh>
+#include <EzyMapLicense.mqh>
 CTrade trade;
+
+#define SCRIPT_ID "EzyMap_BulkClose"
 
 input int InpRefreshSeconds = 2;   // Live summary refresh interval (seconds)
 
@@ -502,6 +505,13 @@ void DoCloseLayersByCount(ENUM_POSITION_TYPE type,string label,bool highestFirst
 //--------------------------- MT5 events -----------------------------
 int OnInit()
 {
+   if(!EzyMapLicenseGate(SCRIPT_ID,PREFIX,PRODUCT_NAME))
+   {
+      EventSetTimer(MathMax(1,InpRefreshSeconds));
+      ChartRedraw(0);
+      return INIT_SUCCEEDED;
+   }
+
    trade.SetAsyncMode(false);
    BuildGUI();
    RefreshSummary();
@@ -523,12 +533,19 @@ void OnTick()
 
 void OnTimer()
 {
+   if(!EzyMapLicenseRecheck(SCRIPT_ID,PREFIX,PRODUCT_NAME)) return;
    RefreshSummary();
 }
 
 void OnChartEvent(const int id,const long &lparam,const double &dparam,const string &sparam)
 {
    if(id!=CHARTEVENT_OBJECT_CLICK) return;
+
+   if(EzyMapIsLicenseCloseClick(PREFIX,sparam))
+   {
+      ExpertRemove();
+      return;
+   }
 
    if(sparam==PREFIX+"BTN_CLOSE")
    {
