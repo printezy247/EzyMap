@@ -1,58 +1,114 @@
 # EzyMap License Server
 
-Subscription/licensing backend for the 17 EzyMap MT5 tools. Locks each
-tool to a paying account (by MT5 login number) so a leaked `.ex5` file is
-useless without an active subscription - the compiled file still runs,
-but it phones home on startup and periodically afterwards, and refuses to
-work if the account behind it isn't paid up.
+Subscription/licensing backend for the 17 EzyMap MT5 tools, plus a
+self-service checkout page that auto-grants a subscription the moment a
+customer pays (via Xendit) - no manual admin work per sale.
 
-## The two products
+Locks each tool to a paying account (by MT5 login number) so a leaked
+`.ex5` file is useless without an active subscription - the compiled file
+still runs, but it phones home on startup and periodically afterwards,
+and refuses to work if the account behind it isn't paid up.
+
+## The products
 
 - **bundle** - one subscription, unlocks all 17 tools.
-- **elite5** - a cheaper, standalone subscription that unlocks ONLY these
-  5 tools (also included in bundle - elite5 is just a lower-priced entry
-  point for customers who only want these 5):
-  - `EzyMap_AutoTPSL`
-  - `EzyMap_BulkClose`
-  - `EzyMap_CurrencyStrengthMeter`
-  - `EzyMap_MTFBiasDashboard`
-  - `EzyMap_DrawdownGuardian`
+- 5 "hot selling" tools are ALSO sold individually - a customer can buy
+  just one of these without the rest (also included free in `bundle`):
+  - `bulkclose` -> `EzyMap_BulkClose`
+  - `drawdownguardian` -> `EzyMap_DrawdownGuardian`
+  - `autotpsl` -> `EzyMap_AutoTPSL`
+  - `currencystrength` -> `EzyMap_CurrencyStrengthMeter`
+  - `mtfbias` -> `EzyMap_MTFBiasDashboard`
 
-Both products are sold in **1 month / 6 months / 1 year** tiers (see
-`lib/products.js` for the exact day counts and to add more tiers/products
-later). The other 12 tools require `bundle` only.
+All products are sold in **1 month / 6 months / 1 year** tiers. See
+`lib/products.js` for the tool-to-product mapping and `lib/pricing.js`
+for prices - both are the single source of truth, edit them freely. The
+other 12 tools require `bundle` only.
 
 ## 1. Run it
 
 ```bash
 cd EzyMapLicenseServer
 npm install
+cp .env.example .env   # then fill in ADMIN_TOKEN at minimum
 npm start
 ```
 
-Runs on port 3000 by default (copy `.env.example` to `.env` to change it).
-For real customers this needs to be deployed somewhere always-on and
-publicly reachable (same options as the Telegram bot - a $5/mo VPS,
-Railway, Render, etc). MT5's `WebRequest()` requires **https** in most
-broker builds for anything but localhost, so for production put this
-behind a reverse proxy with a real TLS certificate (e.g. Caddy, or
-Railway/Render's built-in HTTPS) rather than serving plain http.
+Runs on port 3000 by default. For real customers this needs to be
+deployed somewhere always-on and publicly reachable with HTTPS (MT5's
+`WebRequest()` requires it) - see the beginner deployment walkthrough
+below.
 
-## 2. Grant/manage subscriptions (admin CLI)
+## 2. Self-service checkout (Xendit)
+
+Visiting `/checkout.html` on your server shows customers a payment page:
+pick a product + tier, type their MT5 account number, pay - their
+subscription unlocks automatically within about a minute, no manual
+`admin.js grant` needed.
+
+### One-time Xendit setup
+
+1. Create a Xendit account at **xendit.co** (supports MYR, IDR, PHP and
+   more, plus e-wallets like GrabPay/Touch 'n Go and local bank
+   transfers - good fit for Southeast Asian customers).
+2. Dashboard -> **Settings -> API Keys** -> copy your **Secret Key**
+   (starts with `xnd_development_...` for testing, `xnd_production_...`
+   once you're live).
+3. Add it to `.env`:
+   ```
+   XENDIT_SECRET_KEY=xnd_development_xxxxxxxxxxxx
+   ```
+4. Dashboard -> **Settings -> Callbacks** -> find "Invoices Callback" ->
+   set the URL to `https://your-server-url/webhook/xendit` -> copy the
+   **Verification Token** shown there.
+5. Add it to `.env`:
+   ```
+   XENDIT_CALLBACK_TOKEN=<the verification token from step 4>
+   ```
+6. Restart the server. Open `https://your-server-url/checkout.html` and
+   do a small test purchase using Xendit's test mode - confirm
+   `node admin.js list --account <the test account>` shows the grant
+   landed within a minute of "paying."
+7. Once happy, switch `XENDIT_SECRET_KEY` to your production key and
+   Xendit's dashboard out of test mode.
+
+If a payment comes in with a status other than `PAID`/`SETTLED` (e.g.
+`EXPIRED`), nothing is granted - only confirmed payments unlock anything.
+
+### What actually happens on a purchase
+
+1. Customer fills the form on `/checkout.html` -> browser posts to
+   `/checkout/create`.
+2. Server looks up the price in `lib/pricing.js`, creates a Xendit
+   invoice with `external_id` encoding `grant_<account>_<product>_<tier>_<random>`,
+   and redirects the customer to Xendit's hosted payment page.
+3. Customer pays (card, bank transfer, e-wallet - whatever Xendit
+   offers them).
+4. Xendit calls `POST /webhook/xendit` on your server with the invoice
+   status. If `PAID`/`SETTLED`, the server parses the `external_id` back
+   apart and calls the same `store.grant()` the admin CLI uses.
+5. Customer is redirected to `/thanks.html`. Their MT5 tool picks up the
+   new license on its next periodic check (within `InpEzyLicenseRecheckMinutes`,
+   default 30 min - or immediately if they restart the tool).
+
+## 3. Grant/manage subscriptions manually (admin CLI)
+
+Still useful for bank-transfer customers, refunds, or anything outside
+the automated checkout.
 
 ```bash
-# New customer buys the Elite5 6-month plan:
-node admin.js grant --account 12345678 --product elite5 --tier 6m --note "PayPal #123"
+# New customer buys Drawdown Guardian standalone, 6 months, paid by bank transfer:
+node admin.js grant --account 12345678 --product drawdownguardian --tier 6m --note "bank transfer receipt #123"
 
 # New customer buys the full Bundle for 1 year:
 node admin.js grant --account 87654321 --product bundle --tier 1y
 
 # Renewing early extends from the CURRENT expiry, not from today - no
 # paid-for time is lost:
-node admin.js grant --account 12345678 --product elite5 --tier 1m
+node admin.js grant --account 12345678 --product drawdownguardian --tier 1m
 
 # Stop a subscription (chargeback, refund, abuse):
-node admin.js revoke --account 12345678 --product elite5
+node admin.js revoke --account 12345678 --product drawdownguardian
 
 # See everything:
 node admin.js list
@@ -65,7 +121,9 @@ node admin.js list --account 12345678
 node admin.js check --account 12345678 --script EzyMap_BulkClose
 ```
 
-Tiers: `1m` (30 days), `6m` (182 days), `1y` (365 days).
+Products: `bundle`, `bulkclose`, `drawdownguardian`, `autotpsl`,
+`currencystrength`, `mtfbias`. Tiers: `1m` (30 days), `6m` (182 days),
+`1y` (365 days).
 
 Subscriptions are stored in `data/subscriptions.json` (gitignored - this
 is real customer data, back it up separately, e.g. a periodic `scp`/cron
@@ -87,22 +145,19 @@ ADMIN_TOKEN=<same token you set in the deployed server's .env>
 
 Every `node admin.js grant/revoke/list/check` command then talks to the
 live server over HTTPS instead of touching a local file - same commands,
-same output, just pointed at production. See the step-by-step deployment
-guide below for exactly where this fits in.
+same output, just pointed at production.
 
-## 3. Wire it into MT5
+## 4. Wire it into MT5
 
 Every `.mq5` file already `#include`s `EzyMapLicense.mqh` (in the repo
 root, next to the tools) and calls the license check on `OnInit` plus a
 periodic re-check on `OnTimer`/`OnTick`. Nothing to add per-tool - just:
 
-1. **Deploy this server** somewhere with a stable URL (e.g.
-   `https://license.yourdomain.com`).
+1. **Deploy this server** somewhere with a stable HTTPS URL.
 2. **Whitelist that URL in every customer's MT5**: Tools > Options >
    Expert Advisors tab > check "Allow WebRequest for listed URL" > add
    the server's URL. (If they forget this step, the tool shows exactly
-   this instruction on-chart instead of a cryptic error - see
-   `EzyMapLicense.mqh`.)
+   this instruction on-chart instead of a cryptic error.)
 3. Each tool has an input `InpEzyLicenseServerURL` (defaults to
    `http://127.0.0.1:3000` for local testing) - set this to your real
    server URL before compiling the `.ex5` you distribute, so customers
@@ -117,7 +172,7 @@ periodic re-check on `OnTimer`/`OnTick`. Nothing to add per-tool - just:
 text (not JSON, so MQL5's `StringSplit` can parse it with no library):
 
 ```
-VALID|2026-09-13T04:05:28.593Z|elite5|1m
+VALID|2026-09-13T04:05:28.593Z|bulkclose|1m
 INVALID|No active EzyMap subscription found for this account. Contact EzyMap to purchase/renew.
 ```
 
@@ -126,33 +181,34 @@ whitelisted yet), the tool shows a small on-chart "License Required"
 panel with the reason and its own close button instead of its normal
 GUI - it does not silently fail or crash.
 
-## 4. Full beginner walkthrough (deploying on Railway)
-
-See the step-by-step guide pinned in the project chat, or follow this
-summary:
+## 5. Full beginner walkthrough (deploying on Railway)
 
 1. Railway.app -> sign in with GitHub -> New Project -> Deploy from GitHub
    repo -> pick your EzyMap repo.
 2. Service Settings -> set **Root Directory** to `EzyMapLicenseServer`.
-3. Service Variables -> add `ADMIN_TOKEN` (a long random string).
+3. Service Variables -> add `ADMIN_TOKEN`, `XENDIT_SECRET_KEY`,
+   `XENDIT_CALLBACK_TOKEN` (see Xendit setup above).
 4. Service -> Volumes -> New Volume -> mount path `/app/data` (keeps
    `subscriptions.json` alive across restarts/redeploys).
 5. Settings -> Networking -> Generate Domain -> gives you a free
    `https://....up.railway.app` URL with HTTPS already handled.
-6. Visit `https://your-url/health` in a browser - should show `ok`.
-7. In your OWN computer's `EzyMapLicenseServer/.env`, set
+6. Visit `https://your-url/health` - should show `ok`. Visit
+   `https://your-url/checkout.html` - should show the payment page.
+7. Point Xendit's Invoices Callback URL at `https://your-url/webhook/xendit`.
+8. In your OWN computer's `EzyMapLicenseServer/.env`, set
    `EZYMAP_SERVER_URL` to that URL and `ADMIN_TOKEN` to the same value
    from step 3 - now `node admin.js grant ...` manages the live server.
-8. Set `InpEzyLicenseServerURL` to that URL in every tool before
+9. Set `InpEzyLicenseServerURL` to that URL in every tool before
    compiling the `.ex5` you distribute.
-9. Tell customers to whitelist that URL under Tools > Options > Expert
-   Advisors > Allow WebRequest for listed URL.
+10. Tell customers to whitelist that URL under Tools > Options > Expert
+    Advisors > Allow WebRequest for listed URL.
 
-## Adding a new tool later
+## Adding a new tool or product later
 
-Add its id to `SCRIPT_REQUIREMENTS` in `lib/products.js` (either
-`['bundle']` or `['bundle','elite5']`), then in the new `.mq5` file mirror
-the pattern used in any existing tool: `#include <EzyMapLicense.mqh>`,
+Add its script id to `SCRIPT_REQUIREMENTS` in `lib/products.js` (either
+`['bundle']` or `['bundle','<productId>']`) and, if it's a new standalone
+product, its price to `lib/pricing.js`. Then in the new `.mq5` file
+mirror the pattern used in any existing tool: `#include <EzyMapLicense.mqh>`,
 `#define SCRIPT_ID "EzyMap_YourToolName"`, call `EzyMapLicenseGate(...)`
 as the first line of `OnInit`, and `EzyMapLicenseRecheck(...)` in
 `OnTimer`/`OnTick`.

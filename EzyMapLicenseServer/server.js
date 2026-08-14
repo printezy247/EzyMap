@@ -11,14 +11,25 @@
 //
 //   VALID|<expiresAtIso>|<product>|<tier>
 //   INVALID|<human-readable reason>
+//
+// Also serves a self-service checkout page (/checkout.html) backed by
+// Xendit invoices, and a webhook that auto-grants the subscription the
+// moment a customer pays - no manual admin.js command needed.
 
 require('dotenv').config();
+const path = require('path');
+const crypto = require('crypto');
 const express = require('express');
 const store = require('./lib/store');
-const { requirementsFor, ALL_SCRIPTS } = require('./lib/products');
+const { requirementsFor, ALL_SCRIPTS, TIERS } = require('./lib/products');
+const { PRICING, CURRENCY, priceFor } = require('./lib/pricing');
+const { createInvoice } = require('./lib/xendit');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
+
+app.use(express.json());
+app.use(express.static(path.join(__dirname, 'public')));
 
 app.get('/license/check', (req, res) => {
   res.type('text/plain');
@@ -48,14 +59,89 @@ app.get('/license/check', (req, res) => {
 app.get('/health', (req, res) => res.send('ok'));
 
 // ---------------------------------------------------------------------
+// Checkout - self-service payment via Xendit. Customer picks a product
+// + tier and types their MT5 account number on /checkout.html, which
+// posts here to create a hosted Xendit invoice and redirects them to it.
+// ---------------------------------------------------------------------
+app.get('/checkout/pricing', (req, res) => {
+  res.json({ currency: CURRENCY, products: PRICING });
+});
+
+app.post('/checkout/create', async (req, res) => {
+  try {
+    const account = String((req.body || {}).account || '').trim();
+    const product = String((req.body || {}).product || '').trim();
+    const tier = String((req.body || {}).tier || '').trim();
+
+    if (!/^[0-9]+$/.test(account)) {
+      return res.status(400).json({ ok: false, error: 'Enter a valid MT5 account number (numbers only).' });
+    }
+    if (!PRICING[product]) {
+      return res.status(400).json({ ok: false, error: 'Unknown product.' });
+    }
+    const amount = priceFor(product, tier);
+    if (amount == null) {
+      return res.status(400).json({ ok: false, error: 'Unknown tier for this product.' });
+    }
+
+    const baseUrl = `${req.protocol}://${req.get('host')}`;
+    // "grant_<account>_<product>_<tier>_<random>" - the webhook below parses
+    // this back out once Xendit confirms payment. Random suffix keeps
+    // external_id unique per checkout attempt (Xendit requires uniqueness).
+    const externalId = `grant_${account}_${product}_${tier}_${crypto.randomBytes(3).toString('hex')}`;
+
+    const invoice = await createInvoice({
+      externalId,
+      amount,
+      currency: CURRENCY,
+      description: `${PRICING[product].name} - ${TIERS[tier].label} (MT5 account ${account})`,
+      successRedirectUrl: `${baseUrl}/thanks.html`,
+      failureRedirectUrl: `${baseUrl}/checkout.html`,
+    });
+
+    res.json({ ok: true, invoiceUrl: invoice.invoice_url });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+// Xendit calls this the moment an invoice's status changes. Verified via
+// the "x-callback-token" header, set to match XENDIT_CALLBACK_TOKEN below
+// (configure the same value in Xendit Dashboard > Settings > Callbacks).
+app.post('/webhook/xendit', (req, res) => {
+  const expectedToken = process.env.XENDIT_CALLBACK_TOKEN;
+  const receivedToken = req.get('x-callback-token');
+  if (!expectedToken || receivedToken !== expectedToken) {
+    return res.status(401).send('Unauthorized');
+  }
+
+  const { status, external_id: externalId } = req.body || {};
+  if (status === 'PAID' || status === 'SETTLED') {
+    const parts = String(externalId || '').split('_');
+    if (parts[0] === 'grant' && parts.length >= 4) {
+      const [, account, product, tier] = parts;
+      try {
+        store.grant(account, product, tier, `Auto-granted via Xendit invoice ${externalId}`);
+        console.log(`Auto-granted ${product}/${tier} to account ${account} (Xendit ${externalId})`);
+      } catch (err) {
+        console.error(`Auto-grant failed for ${externalId}:`, err.message);
+      }
+    } else {
+      console.error(`Paid invoice with unrecognized external_id: ${externalId}`);
+    }
+  }
+
+  // Xendit retries on non-2xx, so always acknowledge once verified.
+  res.status(200).send('ok');
+});
+
+// ---------------------------------------------------------------------
 // Admin API - lets admin.js manage subscriptions on a DEPLOYED server
 // (not just the copy of data/subscriptions.json on your own computer).
 // Protected by ADMIN_TOKEN (set in .env) - without it these routes are
 // disabled entirely, so a server deployed without an ADMIN_TOKEN simply
 // can't be managed remotely (admin.js falls back to local-file mode).
 // ---------------------------------------------------------------------
-app.use(express.json());
-
 function requireAdmin(req, res, next) {
   const token = process.env.ADMIN_TOKEN;
   if (!token) return res.status(503).json({ ok: false, error: 'Admin API disabled - set ADMIN_TOKEN in .env on the server.' });

@@ -1,16 +1,17 @@
-// Defines the two commercial products and which of the 17 EzyMap MT5 tools
+// Defines the commercial products and which of the 17 EzyMap MT5 tools
 // each one unlocks.
 //
 // - "bundle": one subscription, unlocks all 17 tools.
-// - "elite5": a cheaper, standalone subscription that unlocks ONLY the 5
-//   named hot-selling tools. Someone who owns "bundle" already has access
-//   to these 5 too - elite5 exists purely as a lower-priced entry point for
-//   customers who only want these 5.
+// - 5 "hot selling" tools are ALSO sold individually, each as its own
+//   standalone product - a customer can buy just Drawdown Guardian, or
+//   just Bulk Close, without the rest. Someone who owns "bundle" already
+//   has access to all 5 - the individual products are a lower-priced
+//   entry point for customers who only want one specific tool.
 //
-// A tool's `requires` list means "valid if the customer has an active
+// A tool's requirement list means "valid if the customer has an active
 // subscription to ANY product in this list".
 
-const PRODUCTS = ['bundle', 'elite5'];
+const PRODUCTS = ['bundle', 'bulkclose', 'drawdownguardian', 'autotpsl', 'currencystrength', 'mtfbias'];
 
 const TIERS = {
   '1m': { label: '1 Month', days: 30 },
@@ -18,14 +19,15 @@ const TIERS = {
   '1y': { label: '1 Year', days: 365 },
 };
 
-// The 5 tools sold both inside the Bundle and standalone as Elite5.
-const ELITE5_SCRIPTS = [
-  'EzyMap_AutoTPSL',
-  'EzyMap_BulkClose',
-  'EzyMap_CurrencyStrengthMeter',
-  'EzyMap_MTFBiasDashboard',
-  'EzyMap_DrawdownGuardian',
-];
+// The 5 hot-selling tools, each sold both inside the Bundle and standalone
+// as its own product.
+const INDIVIDUAL_PRODUCT_FOR_SCRIPT = {
+  EzyMap_BulkClose: 'bulkclose',
+  EzyMap_DrawdownGuardian: 'drawdownguardian',
+  EzyMap_AutoTPSL: 'autotpsl',
+  EzyMap_CurrencyStrengthMeter: 'currencystrength',
+  EzyMap_MTFBiasDashboard: 'mtfbias',
+};
 
 // The remaining 12 tools - Bundle only.
 const BUNDLE_ONLY_SCRIPTS = [
@@ -44,7 +46,8 @@ const BUNDLE_ONLY_SCRIPTS = [
 ];
 
 const SCRIPT_REQUIREMENTS = {};
-for (const id of ELITE5_SCRIPTS) SCRIPT_REQUIREMENTS[id] = ['bundle', 'elite5'];
+for (const [scriptId, productId] of Object.entries(INDIVIDUAL_PRODUCT_FOR_SCRIPT))
+  SCRIPT_REQUIREMENTS[scriptId] = ['bundle', productId];
 for (const id of BUNDLE_ONLY_SCRIPTS) SCRIPT_REQUIREMENTS[id] = ['bundle'];
 
 const ALL_SCRIPTS = Object.keys(SCRIPT_REQUIREMENTS);
@@ -56,7 +59,7 @@ function requirementsFor(scriptId) {
 module.exports = {
   PRODUCTS,
   TIERS,
-  ELITE5_SCRIPTS,
+  INDIVIDUAL_PRODUCT_FOR_SCRIPT,
   BUNDLE_ONLY_SCRIPTS,
   ALL_SCRIPTS,
   SCRIPT_REQUIREMENTS,

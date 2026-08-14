@@ -1,0 +1,158 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>EzyMap - Get Your Tools</title>
+<style>
+  :root {
+    --bg: #07090c; --panel: #12161c; --border: #38414c; --text: #cdd3da;
+    --muted: #8a929c; --accent: #edb93a; --accent-text: #07090c;
+    --danger: #eb4860;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif;
+    padding: 24px 16px 80px;
+  }
+  .wrap { max-width: 720px; margin: 0 auto; }
+  h1 { font-size: 22px; margin: 0 0 4px; }
+  .sub { color: var(--muted); margin: 0 0 24px; font-size: 14px; }
+  .card {
+    background: var(--panel); border: 1px solid var(--border); border-radius: 12px;
+    padding: 16px; margin-bottom: 14px;
+  }
+  .card h2 { font-size: 16px; margin: 0 0 4px; color: #fff; }
+  .card p.desc { color: var(--muted); font-size: 13px; margin: 0 0 12px; }
+  .tiers { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+  .tier {
+    border: 1px solid var(--border); border-radius: 8px; background: #1e242c;
+    padding: 10px 6px; text-align: center; cursor: pointer; user-select: none;
+  }
+  .tier.selected { border-color: var(--accent); background: #2a2412; }
+  .tier .label { font-size: 12px; color: var(--muted); }
+  .tier .price { font-size: 16px; font-weight: 700; color: #fff; margin-top: 2px; }
+  .tier .was { font-size: 11px; color: var(--muted); text-decoration: line-through; }
+  .footer-bar {
+    position: fixed; left: 0; right: 0; bottom: 0; background: var(--panel);
+    border-top: 1px solid var(--border); padding: 12px 16px;
+  }
+  .footer-inner { max-width: 720px; margin: 0 auto; display: flex; gap: 10px; align-items: center; }
+  input#account {
+    flex: 1; background: #1e242c; border: 1px solid var(--border); border-radius: 8px;
+    color: #fff; padding: 10px 12px; font-size: 14px;
+  }
+  button#payBtn {
+    background: var(--accent); color: var(--accent-text); border: none; border-radius: 8px;
+    padding: 10px 20px; font-weight: 700; font-size: 14px; cursor: pointer;
+  }
+  button#payBtn:disabled { opacity: 0.5; cursor: not-allowed; }
+  .error { color: var(--danger); font-size: 13px; margin-top: 8px; display: none; }
+  .selection-note { color: var(--muted); font-size: 12px; margin-top: 6px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>EzyMap MT5 Tools</h1>
+  <p class="sub">Pick a tool (or the full Bundle), choose a plan, enter the MT5 account number you'll use the tool on, and pay - your subscription unlocks automatically within a minute of payment.</p>
+  <div id="products"></div>
+</div>
+
+<div class="footer-bar">
+  <div class="footer-inner">
+    <input id="account" type="text" inputmode="numeric" placeholder="Your MT5 account number">
+    <button id="payBtn" disabled>Select a plan</button>
+  </div>
+  <div class="selection-note" id="selectionNote"></div>
+  <div class="error" id="errorBox"></div>
+</div>
+
+<script>
+let pricing = null;
+let selection = null; // { product, tier }
+
+async function load() {
+  const res = await fetch('/checkout/pricing');
+  pricing = await res.json();
+  render();
+}
+
+function render() {
+  const root = document.getElementById('products');
+  root.innerHTML = '';
+  for (const [productId, info] of Object.entries(pricing.products)) {
+    const card = document.createElement('div');
+    card.className = 'card';
+    card.innerHTML = `<h2>${info.name}</h2><p class="desc">${info.description}</p>`;
+    const tiersEl = document.createElement('div');
+    tiersEl.className = 'tiers';
+    const tierLabels = { '1m': '1 Month', '6m': '6 Months', '1y': '1 Year' };
+    for (const [tierId, t] of Object.entries(info.tiers)) {
+      const el = document.createElement('div');
+      el.className = 'tier';
+      el.dataset.product = productId;
+      el.dataset.tier = tierId;
+      el.innerHTML = `<div class="label">${tierLabels[tierId] || tierId}</div>` +
+        (t.wasPrice ? `<div class="was">${pricing.currency} ${t.wasPrice}</div>` : '') +
+        `<div class="price">${pricing.currency} ${t.price}</div>`;
+      el.addEventListener('click', () => selectTier(productId, tierId));
+      tiersEl.appendChild(el);
+    }
+    card.appendChild(tiersEl);
+    root.appendChild(card);
+  }
+}
+
+function selectTier(productId, tierId) {
+  selection = { product: productId, tier: tierId };
+  document.querySelectorAll('.tier').forEach((el) => {
+    el.classList.toggle('selected', el.dataset.product === productId && el.dataset.tier === tierId);
+  });
+  const info = pricing.products[productId];
+  const tierLabels = { '1m': '1 Month', '6m': '6 Months', '1y': '1 Year' };
+  document.getElementById('selectionNote').textContent =
+    `Selected: ${info.name} - ${tierLabels[tierId]}`;
+  const btn = document.getElementById('payBtn');
+  btn.disabled = false;
+  btn.textContent = `Pay ${pricing.currency} ${info.tiers[tierId].price}`;
+}
+
+document.getElementById('payBtn').addEventListener('click', async () => {
+  const errorBox = document.getElementById('errorBox');
+  errorBox.style.display = 'none';
+  const account = document.getElementById('account').value.trim();
+
+  if (!selection) { showError('Pick a plan first.'); return; }
+  if (!/^[0-9]+$/.test(account)) { showError('Enter a valid MT5 account number (numbers only).'); return; }
+
+  const btn = document.getElementById('payBtn');
+  btn.disabled = true;
+  btn.textContent = 'Redirecting to payment...';
+
+  try {
+    const res = await fetch('/checkout/create', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ account, product: selection.product, tier: selection.tier }),
+    });
+    const data = await res.json();
+    if (!data.ok) throw new Error(data.error || 'Something went wrong.');
+    window.location.href = data.invoiceUrl;
+  } catch (err) {
+    showError(err.message);
+    btn.disabled = false;
+    btn.textContent = 'Try again';
+  }
+});
+
+function showError(msg) {
+  const box = document.getElementById('errorBox');
+  box.textContent = msg;
+  box.style.display = 'block';
+}
+
+load();
+</script>
+</body>
+</html>

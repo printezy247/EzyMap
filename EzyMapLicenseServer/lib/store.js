@@ -6,7 +6,7 @@
 // {
 //   "12345678": {
 //     "bundle": { "tier": "6m", "expiresAt": "2026-02-14T00:00:00.000Z", "note": "" },
-//     "elite5": { "tier": "1y", "expiresAt": "2027-08-14T00:00:00.000Z", "note": "" }
+//     "bulkclose": { "tier": "1y", "expiresAt": "2027-08-14T00:00:00.000Z", "note": "" }
 //   }
 // }
 
