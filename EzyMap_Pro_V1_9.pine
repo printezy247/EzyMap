@@ -1322,7 +1322,7 @@ if buyHighZoneChanged
         armedBuyHighSweepReclaim:=false
         armedBuyHighPremiumLiquidity:=false
         armedBuyHighDisplacementChoch:=false
-    armedBuyHighFvgFill:=false
+        armedBuyHighFvgFill:=false
         armedBuyHighEmaSlope:=false
         armedBuyHighEmaRegime:=false
         armedBuyHighVWAP:=false
@@ -1654,7 +1654,7 @@ if buyLowZoneChanged
         armedBuyLowSweepReclaim:=false
         armedBuyLowPremiumLiquidity:=false
         armedBuyLowDisplacementChoch:=false
-    armedBuyLowFvgFill:=false
+        armedBuyLowFvgFill:=false
         armedBuyLowEmaSlope:=false
         armedBuyLowEmaRegime:=false
         armedBuyLowVWAP:=false
@@ -1964,7 +1964,7 @@ if sellHighZoneChanged
         armedSellHighSweepReclaim:=false
         armedSellHighPremiumLiquidity:=false
         armedSellHighDisplacementChoch:=false
-    armedSellHighFvgFill:=false
+        armedSellHighFvgFill:=false
         armedSellHighEmaSlope:=false
         armedSellHighEmaRegime:=false
         armedSellHighVWAP:=false
@@ -2248,7 +2248,7 @@ if sellLowZoneChanged
         armedSellLowSweepReclaim:=false
         armedSellLowPremiumLiquidity:=false
         armedSellLowDisplacementChoch:=false
-    armedSellLowFvgFill:=false
+        armedSellLowFvgFill:=false
         armedSellLowEmaSlope:=false
         armedSellLowEmaRegime:=false
         armedSellLowVWAP:=false
