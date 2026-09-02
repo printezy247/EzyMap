@@ -14,6 +14,7 @@
 const PRODUCTS = ['bundle', 'bulkclose', 'drawdownguardian', 'autotpsl', 'currencystrength', 'mtfbias'];
 
 const TIERS = {
+  'trial': { label: '3-Day Trial', days: 3 },
   '1m': { label: '1 Month', days: 30 },
   '6m': { label: '6 Months', days: 182 },
   '1y': { label: '1 Year', days: 365 },
