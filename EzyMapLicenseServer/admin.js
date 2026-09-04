@@ -49,8 +49,8 @@ function parseArgs(argv) {
 function usageAndExit() {
   console.log(`EzyMap License Admin CLI ${REMOTE_URL ? `(REMOTE: ${REMOTE_URL})` : '(LOCAL file mode)'}
 
-  node admin.js grant  --account <num> --product <bundle|elite5> --tier <1m|6m|1y> [--note "text"]
-  node admin.js revoke --account <num> --product <bundle|elite5>
+  node admin.js grant  --account <num> --product <bundle|bulkclose> --tier <1m|6m|1y|trial> [--note "text"]
+  node admin.js revoke --account <num> --product <bundle|bulkclose>
   node admin.js list   [--account <num>]
   node admin.js check  --account <num> --script <EzyMap_ToolName>
 
@@ -88,9 +88,17 @@ async function remoteCall(method, path, body) {
 async function cmdGrant(args) {
   if (!args.account || !args.product || !args.tier) usageAndExit();
 
-  const rec = REMOTE_URL
-    ? (await remoteCall('POST', '/admin/grant', { account: args.account, product: args.product, tier: args.tier, note: args.note })).record
-    : store.grant(args.account, args.product, args.tier, args.note);
+  let rec;
+  if (REMOTE_URL) {
+    rec = (await remoteCall('POST', '/admin/grant', { account: args.account, product: args.product, tier: args.tier, note: args.note })).record;
+  } else {
+    try {
+      rec = store.grant(args.account, args.product, args.tier, args.note);
+    } catch (err) {
+      console.log(`Error: ${err.message}`);
+      process.exit(1);
+    }
+  }
 
   console.log(`Granted ${args.product} to account ${args.account}.`);
   console.log(fmtRecord(args.product, rec));

@@ -123,11 +123,20 @@ node admin.js check --account 12345678 --script EzyMap_BulkClose
 
 Products: `bundle`, `bulkclose`, `drawdownguardian`, `autotpsl`,
 `currencystrength`, `mtfbias`. Tiers: `1m` (30 days), `6m` (182 days),
-`1y` (365 days).
+`1y` (365 days), `trial` (3 days).
+
+`trial` is intentionally not offered on `/checkout.html` (it has no price
+in `lib/pricing.js`) - it's meant to be granted by `admin.js grant` or an
+external bot (e.g. ASAP-TeleBot's trial.py) calling `/admin/grant`
+directly. Each account/product pair can only ever receive one trial -
+`store.js` remembers this in `data/trials.json`, separately from the
+subscription record itself, so revoking or upgrading past a trial doesn't
+make that account trial-eligible again.
 
 Subscriptions are stored in `data/subscriptions.json` (gitignored - this
 is real customer data, back it up separately, e.g. a periodic `scp`/cron
-copy off the server).
+copy off the server). Trial usage is tracked separately in
+`data/trials.json` (also gitignored, same backup advice).
 
 ### Managing a DEPLOYED server from your own computer
 
@@ -189,7 +198,7 @@ GUI - it does not silently fail or crash.
 3. Service Variables -> add `ADMIN_TOKEN`, `XENDIT_SECRET_KEY`,
    `XENDIT_CALLBACK_TOKEN` (see Xendit setup above).
 4. Service -> Volumes -> New Volume -> mount path `/app/data` (keeps
-   `subscriptions.json` alive across restarts/redeploys).
+   `subscriptions.json` and `trials.json` alive across restarts/redeploys).
 5. Settings -> Networking -> Generate Domain -> gives you a free
    `https://....up.railway.app` URL with HTTPS already handled.
 6. Visit `https://your-url/health` - should show `ok`. Visit
