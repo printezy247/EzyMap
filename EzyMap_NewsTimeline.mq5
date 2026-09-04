@@ -10,6 +10,9 @@
 #property indicator_chart_window
 #property indicator_plots 0
 
+#include <EzyMapLicense.mqh>
+#define SCRIPT_ID "EzyMap_NewsTimeline"
+
 input int  InpLookAheadHours = 48;   // How far ahead to show upcoming news
 input int  InpLookBehindHours= 2;    // How far back to still show recent news
 input int  InpRefreshMinutes = 5;    // Auto-refresh interval
@@ -357,6 +360,13 @@ void RefreshNews()
 int OnInit()
 {
    IndicatorSetString(INDICATOR_SHORTNAME,PRODUCT_NAME);
+   if(!EzyMapLicenseGate(SCRIPT_ID,PREFIX,PRODUCT_NAME))
+   {
+      EventSetTimer(MathMax(30,InpRefreshMinutes*60));
+      ChartRedraw(0);
+      return INIT_SUCCEEDED;
+   }
+
    g_showHigh=InpShowHigh;
    g_showMedium=InpShowMedium;
    g_showLow=InpShowLow;
@@ -377,12 +387,19 @@ void OnDeinit(const int reason)
 
 void OnTimer()
 {
+   if(!EzyMapLicenseRecheck(SCRIPT_ID,PREFIX,PRODUCT_NAME)) return;
    RefreshNews();
 }
 
 void OnChartEvent(const int id,const long &lparam,const double &dparam,const string &sparam)
 {
    if(id!=CHARTEVENT_OBJECT_CLICK) return;
+
+   if(EzyMapIsLicenseCloseClick(PREFIX,sparam))
+   {
+      ChartIndicatorDelete(0,0,PRODUCT_NAME);
+      return;
+   }
 
    if(sparam==PREFIX+"BTN_CLOSE")
    {

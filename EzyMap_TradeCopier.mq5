@@ -9,6 +9,9 @@
 #property strict
 
 #include <Trade/Trade.mqh>
+#include <EzyMapLicense.mqh>
+
+#define SCRIPT_ID "EzyMap_TradeCopier"
 CTrade trade;
 
 enum ELotMode
@@ -279,6 +282,13 @@ int OnInit()
       return INIT_FAILED;
    }
 
+   if(!EzyMapLicenseGate(SCRIPT_ID,PREFIX,PRODUCT_NAME))
+   {
+      EventSetTimer(MathMax(1,InpPollSeconds));
+      ChartRedraw(0);
+      return INIT_SUCCEEDED;
+   }
+
    trade.SetAsyncMode(false);
    g_paused=false;
    ArrayResize(g_sourceTickets,0);
@@ -300,17 +310,25 @@ void OnDeinit(const int reason)
 
 void OnTick()
 {
+   if(!EzyMapLicenseRecheck(SCRIPT_ID,PREFIX,PRODUCT_NAME)) return;
    SyncCopies();
 }
 
 void OnTimer()
 {
+   if(!EzyMapLicenseRecheck(SCRIPT_ID,PREFIX,PRODUCT_NAME)) return;
    SyncCopies();
 }
 
 void OnChartEvent(const int id,const long &lparam,const double &dparam,const string &sparam)
 {
    if(id!=CHARTEVENT_OBJECT_CLICK) return;
+
+   if(EzyMapIsLicenseCloseClick(PREFIX,sparam))
+   {
+      ExpertRemove();
+      return;
+   }
 
    if(sparam==PREFIX+"BTN_CLOSE")
    {

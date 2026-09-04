@@ -1,0 +1,13 @@
+{
+  "name": "ezymap-bot",
+  "version": "1.0.0",
+  "description": "EzyMap Telegram bot - Lot Size and Margin calculators, phase 1 (standalone, no MT5 connection required)",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "dotenv": "^16.4.5",
+    "node-telegram-bot-api": "^0.66.0"
+  }
+}

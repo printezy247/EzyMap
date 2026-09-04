@@ -9,6 +9,9 @@
 #property indicator_chart_window
 #property indicator_plots 0
 
+#include <EzyMapLicense.mqh>
+#define SCRIPT_ID "EzyMap_SessionClock"
+
 input int InpRefreshSeconds = 5;    // Live refresh interval (seconds)
 input int InpLookbackDays   = 10;   // Days of H1 history used for average range
 
@@ -253,6 +256,13 @@ void RefreshPanel()
 int OnInit()
 {
    IndicatorSetString(INDICATOR_SHORTNAME,PRODUCT_NAME);
+   if(!EzyMapLicenseGate(SCRIPT_ID,PREFIX,PRODUCT_NAME))
+   {
+      EventSetTimer(MathMax(1,InpRefreshSeconds));
+      ChartRedraw(0);
+      return INIT_SUCCEEDED;
+   }
+
    BuildGUI();
    RefreshPanel();
    EventSetTimer(MathMax(1,InpRefreshSeconds));
@@ -269,11 +279,17 @@ void OnDeinit(const int reason)
 
 void OnTimer()
 {
+   if(!EzyMapLicenseRecheck(SCRIPT_ID,PREFIX,PRODUCT_NAME)) return;
    RefreshPanel();
 }
 
 void OnChartEvent(const int id,const long &lparam,const double &dparam,const string &sparam)
 {
+   if(id==CHARTEVENT_OBJECT_CLICK && EzyMapIsLicenseCloseClick(PREFIX,sparam))
+   {
+      ChartIndicatorDelete(0,0,PRODUCT_NAME);
+      return;
+   }
    if(id==CHARTEVENT_OBJECT_CLICK && sparam==PREFIX+"BTN_CLOSE")
    {
       ChartIndicatorDelete(0,0,PRODUCT_NAME);

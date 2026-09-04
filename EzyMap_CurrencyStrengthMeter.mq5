@@ -8,6 +8,9 @@
 #property indicator_chart_window
 #property indicator_plots 0
 
+#include <EzyMapLicense.mqh>
+#define SCRIPT_ID "EzyMap_CurrencyStrengthMeter"
+
 input int InpRefreshSeconds = 3;   // Live refresh interval (seconds)
 
 input color  InpPanelColor       = C'7,10,14';
@@ -306,6 +309,13 @@ void RefreshPanel()
 int OnInit()
 {
    IndicatorSetString(INDICATOR_SHORTNAME,PRODUCT_NAME);
+   if(!EzyMapLicenseGate(SCRIPT_ID,PREFIX,PRODUCT_NAME))
+   {
+      EventSetTimer(MathMax(1,InpRefreshSeconds));
+      ChartRedraw(0);
+      return INIT_SUCCEEDED;
+   }
+
    g_tfIndex=1;
    BuildGUI();
    RefreshPanel();
@@ -323,6 +333,7 @@ void OnDeinit(const int reason)
 
 void OnTimer()
 {
+   if(!EzyMapLicenseRecheck(SCRIPT_ID,PREFIX,PRODUCT_NAME)) return;
    RefreshPanel();
 }
 
@@ -330,6 +341,12 @@ void OnChartEvent(const int id,const long &lparam,const double &dparam,const str
 {
    if(id==CHARTEVENT_OBJECT_CLICK)
    {
+      if(EzyMapIsLicenseCloseClick(PREFIX,sparam))
+      {
+         ChartIndicatorDelete(0,0,PRODUCT_NAME);
+         return;
+      }
+
       if(sparam==PREFIX+"BTN_CLOSE")
       {
          ChartIndicatorDelete(0,0,PRODUCT_NAME);

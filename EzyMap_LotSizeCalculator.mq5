@@ -8,6 +8,9 @@
 #property indicator_chart_window
 #property indicator_plots 0
 
+#include <EzyMapLicense.mqh>
+#define SCRIPT_ID "EzyMap_LotSizeCalculator"
+
 input double InpMinRiskPercent = 0.5;    // Min risk tier (% of capital)
 input double InpMedRiskPercent = 10.0;   // Medium risk tier (% of capital)
 input double InpMaxRiskPercent = 25.0;   // Max risk tier (% of capital)
@@ -424,6 +427,13 @@ string BuildTierText(string label,double riskPercent,double capital,double money
 int OnInit()
 {
    IndicatorSetString(INDICATOR_SHORTNAME,PRODUCT_NAME);
+   EventSetTimer(60);
+   if(!EzyMapLicenseGate(SCRIPT_ID,PREFIX,PRODUCT_NAME))
+   {
+      ChartRedraw(0);
+      return INIT_SUCCEEDED;
+   }
+
    g_selectedIndex=-1;
    g_dropdownOpen=false;
    BuildGUI();
@@ -433,14 +443,26 @@ int OnInit()
 
 void OnDeinit(const int reason)
 {
+   EventKillTimer();
    ObjectsDeleteAll(0,PREFIX);
    ChartRedraw(0);
+}
+
+void OnTimer()
+{
+   EzyMapLicenseRecheck(SCRIPT_ID,PREFIX,PRODUCT_NAME);
 }
 
 void OnChartEvent(const int id,const long &lparam,const double &dparam,const string &sparam)
 {
    if(id==CHARTEVENT_OBJECT_CLICK)
    {
+      if(EzyMapIsLicenseCloseClick(PREFIX,sparam))
+      {
+         ChartIndicatorDelete(0,0,PRODUCT_NAME);
+         return;
+      }
+
       if(sparam==PREFIX+"BTN_CLOSE")
       {
          ChartIndicatorDelete(0,0,PRODUCT_NAME);

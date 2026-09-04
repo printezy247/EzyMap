@@ -12,6 +12,9 @@
 #property strict
 
 #include <Trade/Trade.mqh>
+#include <EzyMapLicense.mqh>
+
+#define SCRIPT_ID "EzyMap_DrawdownGuardian"
 CTrade trade;
 
 input double InpMaxDailyLossPercent = 5.0;    // Daily loss limit (% of day-start balance/equity)
@@ -271,6 +274,13 @@ void RefreshGuardian()
 //--------------------------- MT5 events -----------------------------
 int OnInit()
 {
+   if(!EzyMapLicenseGate(SCRIPT_ID,PREFIX,PRODUCT_NAME))
+   {
+      EventSetTimer(MathMax(1,InpPollSeconds));
+      ChartRedraw(0);
+      return INIT_SUCCEEDED;
+   }
+
    trade.SetAsyncMode(false);
    LoadState();
    BuildGUI();
@@ -289,17 +299,25 @@ void OnDeinit(const int reason)
 
 void OnTick()
 {
+   if(!EzyMapLicenseRecheck(SCRIPT_ID,PREFIX,PRODUCT_NAME)) return;
    RefreshGuardian();
 }
 
 void OnTimer()
 {
+   if(!EzyMapLicenseRecheck(SCRIPT_ID,PREFIX,PRODUCT_NAME)) return;
    RefreshGuardian();
 }
 
 void OnChartEvent(const int id,const long &lparam,const double &dparam,const string &sparam)
 {
    if(id!=CHARTEVENT_OBJECT_CLICK) return;
+
+   if(EzyMapIsLicenseCloseClick(PREFIX,sparam))
+   {
+      ExpertRemove();
+      return;
+   }
 
    if(sparam==PREFIX+"BTN_CLOSE")
    {

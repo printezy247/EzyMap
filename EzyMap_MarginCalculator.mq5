@@ -16,6 +16,9 @@
 #property version   "2.00"
 #property strict
 
+#include <EzyMapLicense.mqh>
+#define SCRIPT_ID "EzyMap_MarginCalculator"
+
 input double InpConservativePercent = 30.0;   // Conservative tier (% of free margin used)
 input double InpModeratePercent     = 50.0;   // Moderate tier (% of free margin used)
 input double InpAggressivePercent   = 80.0;   // Aggressive tier (% of free margin used)
@@ -497,6 +500,13 @@ void DoCalculate()
 //--------------------------- MT5 events -----------------------------
 int OnInit()
 {
+   EventSetTimer(60);
+   if(!EzyMapLicenseGate(SCRIPT_ID,PREFIX,PRODUCT_NAME))
+   {
+      ChartRedraw(0);
+      return INIT_SUCCEEDED;
+   }
+
    g_selectedIndex=-1;
    g_dropdownOpen=false;
    BuildGUI();
@@ -506,6 +516,7 @@ int OnInit()
 
 void OnDeinit(const int reason)
 {
+   EventKillTimer();
    ObjectsDeleteAll(0,PREFIX);
    ChartRedraw(0);
 }
@@ -515,10 +526,21 @@ void OnTick()
    // No per-tick work needed - this EA only acts on button clicks.
 }
 
+void OnTimer()
+{
+   EzyMapLicenseRecheck(SCRIPT_ID,PREFIX,PRODUCT_NAME);
+}
+
 void OnChartEvent(const int id,const long &lparam,const double &dparam,const string &sparam)
 {
    if(id==CHARTEVENT_OBJECT_CLICK)
    {
+      if(EzyMapIsLicenseCloseClick(PREFIX,sparam))
+      {
+         ExpertRemove();
+         return;
+      }
+
       if(sparam==PREFIX+"BTN_CLOSE")
       {
          ExpertRemove();

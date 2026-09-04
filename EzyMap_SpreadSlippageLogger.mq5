@@ -9,6 +9,9 @@
 #property indicator_chart_window
 #property indicator_plots 0
 
+#include <EzyMapLicense.mqh>
+#define SCRIPT_ID "EzyMap_SpreadSlippageLogger"
+
 input string InpWatchlist           = "";    // Extra symbols to watch, comma-separated (e.g. "GBPUSD,XAUUSD,BTCUSD"). Current chart symbol is always included.
 input double InpHighSpreadMultiplier= 2.0;   // Flag spread as WIDE if >= this x its own rolling average
 input int    InpSpreadAvgSamples    = 20;    // Rolling average sample count per symbol
@@ -308,6 +311,13 @@ void RefreshAll()
 int OnInit()
 {
    IndicatorSetString(INDICATOR_SHORTNAME,PRODUCT_NAME);
+   if(!EzyMapLicenseGate(SCRIPT_ID,PREFIX,PRODUCT_NAME))
+   {
+      EventSetTimer(MathMax(1,InpRefreshSeconds));
+      ChartRedraw(0);
+      return INIT_SUCCEEDED;
+   }
+
    BuildWatchlist();
    BuildGUI();
    RefreshAll();
@@ -325,11 +335,17 @@ void OnDeinit(const int reason)
 
 void OnTimer()
 {
+   if(!EzyMapLicenseRecheck(SCRIPT_ID,PREFIX,PRODUCT_NAME)) return;
    RefreshAll();
 }
 
 void OnChartEvent(const int id,const long &lparam,const double &dparam,const string &sparam)
 {
+   if(id==CHARTEVENT_OBJECT_CLICK && EzyMapIsLicenseCloseClick(PREFIX,sparam))
+   {
+      ChartIndicatorDelete(0,0,PRODUCT_NAME);
+      return;
+   }
    if(id==CHARTEVENT_OBJECT_CLICK && sparam==PREFIX+"BTN_CLOSE")
    {
       ChartIndicatorDelete(0,0,PRODUCT_NAME);
