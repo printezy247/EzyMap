@@ -1,0 +1,3041 @@
+//@version=6
+indicator("EzyMap Pro V1.9", shorttitle="EzyMap Pro", overlay=true, max_bars_back=5000, max_lines_count=30, max_boxes_count=20, max_labels_count=180, dynamic_requests=true)
+
+//==================================================================================================
+// EZYMAP PRO V1.9
+// Carries forward everything from V1.8 with one addition: a fair value gap
+// (FVG) fill is now a fifth, independent confirmation type, alongside
+// rejection wick, liquidity sweep+reclaim, session/premium sweep+reclaim,
+// displacement CHOCH and plain structure-break CHOCH.
+//
+// An FVG is the classic 3-candle imbalance: on the routed entry timeframe,
+// if the oldest of three consecutive candles doesn't overlap the price
+// range of the newest at all, the untraded gap between them is the FVG.
+// Each of the four zones (BUY-HIGH/BUY-LOW/SELL-HIGH/SELL-LOW) tracks the
+// most recent bullish/bearish FVG independently and treats it as a valid
+// confirmation once that gap overlaps the zone itself — the FVG sitting
+// right where the S/R zone is means a return into the zone is also a
+// return into unfilled imbalance, same idea as sweep/displacement already
+// being scored only when their event candle overlaps the zone. Recency
+// uses the same 4-entry-candle ARMED_CONFIRMATION_WINDOW as every other
+// confirmation type. FVG also adds +1 to confluence scoring (in line with
+// EMA slope/regime/VWAP; lighter than MTF cluster or displacement's +2)
+// and appears in the trade card's extra-reasons list as "FAIR VALUE GAP
+// FILL". A CHOCH that coincides with an FVG at the same zone is now
+// attributed to the FVG in the reasons list (not double-counted as a bare
+// CHOCH), the same way it was already deferred to displacement.
+//
+// Carries forward from V1.8, unchanged — one structural change:
+//
+// HIGH RISK (S1/R1) and LOW RISK (S2/R2) zones are now independent
+// live-signal triggers per direction, instead of every route (trend and
+// counter-trend alike) arming only the LOW RISK zone. There are now four
+// independent armed slots — BUY-HIGH, BUY-LOW, SELL-HIGH, SELL-LOW — each
+// with its own confirmation/confluence/MTF/VWAP evaluation keyed to its
+// own zone coordinates and S1/S2/R1/R2 level. CHOCH (structure-break)
+// confirmation applies identically in both zones per direction, exactly
+// as it already did before this change, since CHOCH was never tied to a
+// specific S/R level. All four slots can be independently READY at the
+// same time; the moment any one of them fires, the existing single
+// ACTIVE-trade lock (now keyed only on direction, not risk tier) still
+// allows just one ACTIVE trade per direction at a time, same as before.
+// The dynamic zone box styling was updated to match — all four boxes
+// (BUY-HIGH, BUY-LOW, SELL-HIGH, SELL-LOW) can now independently show
+// READY, and LIVE is decided by which risk tier the current ACTIVE trade
+// actually came from.
+//
+// Superseded text from V1.7, kept for history:
+// 1) "Minimum Confluence for LIVE Trigger" reverted back to a default of
+//    0 (undoing V1.6's change to 2) — still a fully adjustable input.
+// 2) Both trend-following and counter-trend routes now arm on the LOW
+//    RISK zone (S2 for BUY, R2 for SELL) instead of trend-following using
+//    the near HIGH RISK zone (S1/R1) as before — a deeper, more
+//    significant level for the live-signal trigger specifically. The
+//    HIGH RISK boxes still draw on the map for reference; only the zone
+//    actually armed/traded moved, so the dynamic READY/LIVE box
+//    restyling was updated to match — only the LOW box can highlight now,
+//    the HIGH box stays plain map styling.
+//
+// Superseded text from V1.6, kept for history:
+// 1) "Minimum Confluence for LIVE Trigger" default raised from 0 to 2.
+//    It's an existing input (unchanged since V1.1's marker-comparison
+//    test) that had been left at 0 ever since, meaning it gated nothing —
+//    every touch went LIVE regardless of supporting evidence. Confluence
+//    always starts at a base count of 1 (the S&R level itself), so
+//    requiring 2 filters out the bare setups with zero corroborating
+//    factors (no round number, no EMA/trendline/Fib proximity, no MTF
+//    agreement, no sweep/premium/displacement, no EMA slope/regime, no
+//    VWAP). Since sweep, premium-sweep and displacement confirmations
+//    also score confluence bonus points, this indirectly filters out the
+//    weakest confirmation type too — a plain structure-break CHOCH with
+//    nothing else backing it, the most common and least selective of the
+//    four confirmation paths, is exactly the kind of setup this raises
+//    the bar on without singling CHOCH out by name. Still a fully
+//    adjustable input; set it back to 0 to compare against V1.5 if the
+//    frequency/quality trade-off doesn't land right.
+//
+// Carries forward from V1.5, unchanged:
+//
+// 1) A genuinely-alerted ACTIVE trade could vanish from the dashboard
+//    without ever hitting TP, SL or BE — the historical-to-realtime
+//    boundary reset unconditionally wiped all trade state, and that
+//    boundary re-fires on any silent data-feed reconnect (e.g. a
+//    backgrounded browser tab), not just a fresh script load. Now it only
+//    clears the ACTIVE trade fields when state isn't already "ACTIVE";
+//    READY zones are still always cleared there since they never alerted.
+// 2) The permanent BUY/SELL marker used to be created only inside the
+//    one-shot alert-commit tick, gated by enableAlerts/alertLive — a
+//    missed tick or disabled alerts meant no marker, ever, even for a
+//    trade that genuinely alerted. It now runs every bar a trade is
+//    ACTIVE, independent of the alert path.
+// 3) The trade card's post-result display window was a hardcoded 10
+//    seconds — long enough to vanish before switching from a phone push
+//    notification back to the chart. It's now an adjustable input
+//    ("Result Visible Seconds", Display group), default 30.
+// 4) The confirmation-name lookup had no branch for a plain
+//    structure-break CHOCH (added as a standalone confirmation path
+//    in V1.2) — it fell through to an empty string whenever CHOCH was
+//    the only confirmation reason, showing blank on the trade card's
+//    "WHY THIS TRADE" line. Added "STRUCTURE BREAK (CHOCH)" as the
+//    fallback branch.
+//
+// 5) Requested zone refinement: each S1/S2/R1/R2 zone is now the
+//    rejection wick only, not the full candle range or V1.4's
+//    multi-candle extreme-widening. For the single candle nearest to CMP
+//    that overlaps a level: a support/BUY zone is low-to-close (the wick
+//    below where price settled), and a resistance/SELL zone is
+//    close-to-high (the wick above where price settled) — sharper,
+//    tighter entries anchored to where price actually got rejected. A
+//    minimum height (10 mintick) guards against a candle that closed
+//    exactly at its high or low producing a zero-height zone. Requires
+//    the support-timeframe candle bank to also carry close prices
+//    (previously only high/low/time), so f_support_bank() and the
+//    supportCloses request.security/array wiring were added alongside it.
+//==================================================================================================
+
+//--------------------------------------------------------------------------------------------------
+// Inputs
+//--------------------------------------------------------------------------------------------------
+const string G1="01 • Engine"
+const string G2="02 • Confirmation"
+const string G3="03 • Risk"
+const string G4="04 • Display"
+const string G5="05 • Alerts"
+const string G6="06 • Premium Theme"
+const string G8="07 • Trade Management"
+
+string chartTfSelection=input.string("AUTO","Chart Timeframe",options=["AUTO","1","5","15","30","60","240"],group=G1,display=display.none)
+const int directionEmaLength=13
+int supportPivotBars=input.int(3,"Supporting Swing Bars",minval=2,maxval=8,group=G1,display=display.none)
+float levelDistinctPips=input.float(10.0,"Minimum Level Separation",minval=1.0,maxval=100.0,step=1.0,group=G1,display=display.none)
+
+int entryPivotBars=input.int(1,"Entry CHoCH Swing Bars",minval=1,maxval=5,group=G2,display=display.none)
+bool requireDirectionalBody=input.bool(false,"Require Directional Confirmation Body",group=G2,display=display.none)
+float rejectionWickRatio=input.float(0.25,"Rejection Wick / Body Ratio",minval=0.20,maxval=3.0,step=0.05,group=G2,display=display.none)
+// Pro V1.1: confluence count is a visible, adjustable LIVE-trigger threshold
+// instead of a hardcoded gate. Confluence always starts at 1 (the base S&R
+// level itself), so 0 never blocks anything — this reproduces V1's tested
+// "no confluence gate" behavior exactly at the default. Raise it to require
+// more evidence before LIVE releases, and compare the historical BUY/SELL
+// marker positions between settings. It is calculated and shown on the trade
+// card as CONFIDENCE regardless of what this threshold is set to.
+int minimumConfluenceForLive=input.int(0,"Minimum Confluence for LIVE Trigger",minval=0,maxval=10,group=G2,display=display.none)
+int armedExpiryEntryBars=input.int(60,"READY Expiry (Entry bars)",minval=3,maxval=60,group=G2,display=display.none)
+float confluenceTolerancePips=input.float(70.0,"Confluence Tolerance",minval=5.0,maxval=200.0,step=5.0,group=G2,display=display.none)
+bool useMtfLevelCluster=input.bool(true,"Use Multi-Timeframe Level Cluster",group=G2,display=display.none)
+bool useSweepReclaim=input.bool(true,"Use Completed Liquidity Sweep + Reclaim",group=G2,display=display.none)
+int sweepLookbackBars=input.int(5,"Liquidity Sweep Lookback",minval=2,maxval=12,group=G2,display=display.none)
+
+// Premium additions. All are additive quality evidence; none is a global hard filter.
+bool useSessionDayLiquidity=input.bool(true,"Use Session / Previous-Day Sweep + Reclaim",group=G2,display=display.none)
+string liquidityTimezone=input.string("Etc/UTC","Liquidity Session Timezone",group=G2,display=display.none)
+string asiaSession=input.session("0000-0800","Asian Session",group=G2,display=display.none)
+string londonSession=input.session("0800-1600","London Session",group=G2,display=display.none)
+int sessionLevelMaxAgeHours=input.int(36,"Session Level Maximum Age (hours)",minval=8,maxval=72,group=G2,display=display.none)
+
+bool useEmaRegime=input.bool(true,"Use EMA13 Slope + EMA50 Regime",group=G2,display=display.none)
+const int regimeEmaLength=50
+float emaSlopeMinATR=input.float(0.01,"Minimum EMA13 Slope / ATR",minval=0.0,maxval=0.20,step=0.005,group=G2,display=display.none)
+
+bool useDisplacementChoch=input.bool(true,"Use Displacement-Quality CHoCH",group=G2,display=display.none)
+float displacementMinRangeATR=input.float(0.70,"Displacement Minimum Range / ATR",minval=0.30,maxval=2.00,step=0.05,group=G2,display=display.none)
+float displacementMinBodyPct=input.float(0.55,"Displacement Minimum Body %",minval=0.30,maxval=0.90,step=0.05,group=G2,display=display.none)
+float displacementMinBreakATR=input.float(0.10,"Displacement Break Distance / ATR",minval=0.0,maxval=0.50,step=0.05,group=G2,display=display.none)
+
+bool useVWAP=input.bool(true,"Use Daily VWAP Alignment / Reclaim",group=G2,display=display.none)
+float vwapToleranceATR=input.float(0.20,"VWAP Tolerance / ATR",minval=0.05,maxval=0.75,step=0.05,group=G2,display=display.none)
+
+
+float scalpStopPips=input.float(20.0,"Scalp SL Buffer",minval=10.0,maxval=150.0,step=5.0,group=G3,display=display.none)
+float intradayStopPips=input.float(35.0,"Intraday SL Buffer",minval=10.0,maxval=300.0,step=5.0,group=G3,display=display.none)
+float swingStopPips=input.float(70.0,"Swing SL Buffer",minval=20.0,maxval=600.0,step=10.0,group=G3,display=display.none)
+float scalpTargetMinPoints=input.float(15.0,"Scalp Target Minimum",minval=10.0,maxval=300.0,step=5.0,group=G3,display=display.none)
+float scalpTargetMaxPoints=input.float(80.0,"Scalp Target Maximum",minval=30.0,maxval=500.0,step=10.0,group=G3,display=display.none)
+float intradayTargetMinPoints=input.float(60.0,"Intraday Target Minimum",minval=30.0,maxval=800.0,step=10.0,group=G3,display=display.none)
+float intradayTargetMaxPoints=input.float(250.0,"Intraday Target Maximum",minval=100.0,maxval=1500.0,step=50.0,group=G3,display=display.none)
+float swingTargetMinPoints=input.float(180.0,"Swing Target Minimum",minval=100.0,maxval=2000.0,step=20.0,group=G3,display=display.none)
+float swingTargetMaxPoints=input.float(800.0,"Swing Target Maximum",minval=300.0,maxval=5000.0,step=100.0,group=G3,display=display.none)
+float minimumRR=input.float(0.6,"Minimum R:R",minval=0.5,maxval=1.0,step=0.1,group=G3,display=display.none)
+float maximumRR=input.float(2.5,"Maximum R:R",minval=2.5,maxval=2.5,group=G3,display=display.none)
+float snrFrontRunPips=input.float(10.0,"TP / SL Before S&R",minval=5.0,maxval=100.0,step=5.0,group=G3,display=display.none)
+bool useBreakEven=input.bool(true,"Use Break-Even Protection",group=G3,display=display.none)
+float breakEvenM15TriggerPips=input.float(25.0,"M15 Break-Even Activation",minval=1.0,maxval=300.0,step=1.0,group=G3,display=display.none)
+bool showDirectionLevels=input.bool(true,"Show Direction S&R",group=G4,display=display.none)
+bool showSupportingZones=input.bool(true,"Show Supporting Zones",group=G4,display=display.none)
+bool showEntryZone=input.bool(true,"Show Entry Zone",group=G4,display=display.none)
+int resultVisibleSeconds=input.int(30,"Result Visible Seconds",minval=5,maxval=3600,group=G4,display=display.none)
+bool showDashboard=input.bool(true,"Show Dashboard",group=G4,display=display.none)
+bool showTradeCard=input.bool(true,"Show Trade Card",group=G4,display=display.none)
+bool showMarkers=input.bool(true,"Show Alert-Synced Markers",group=G4,display=display.none)
+bool showBacktestMarkers=input.bool(true,"Show Historical Markers (No Alerts)",group=G4,display=display.none)
+const int MAX_HISTORICAL_MARKERS=33
+const int MAXIMUM_ZONE_RETESTS=4
+
+bool enableAlerts=input.bool(true,"Enable Alerts",group=G5,display=display.none)
+bool alertLive=input.bool(true,"Alert LIVE",group=G5,display=display.none)
+bool alertResult=input.bool(true,"Alert TP / SL / BE",group=G5,display=display.none)
+
+// V1.2: the Session/Time-of-Day filter, Volatility Regime filter and
+// Same-Zone Loss Cooldown (previously G7) are removed entirely — they
+// existed purely to block LIVE promotion, which fights trade frequency.
+
+// New — Trade Management Beyond Entry Filtering.
+// Once the break-even threshold is reached, instead of only guaranteeing a
+// flat return-to-entry exit, the stop trails behind price by an ATR
+// multiple so winners that keep running are not capped at breakeven. The
+// exit is still labelled BE HIT (same Telegram wording/parsing as before),
+// but the pips result now reflects whatever the trail actually locked in —
+// 0 if price never advanced past the trigger, positive if it did.
+bool useTrailingAfterBE=input.bool(true,"Trail Stop After Break-Even",group=G8,display=display.none)
+float trailAfterBEAtrMult=input.float(1.00,"Trail Distance (x Chart ATR)",minval=0.20,maxval=3.00,step=0.10,group=G8,display=display.none)
+
+color buyColor=input.color(color.rgb(0,208,142),"BUY",inline="A",group=G6,display=display.none)
+color sellColor=input.color(color.rgb(235,72,96),"SELL",inline="A",group=G6,display=display.none)
+color supportColor=input.color(color.rgb(52,211,176),"Support",inline="B",group=G6,display=display.none)
+color resistanceColor=input.color(color.rgb(237,185,58),"Resistance",inline="B",group=G6,display=display.none)
+color panelColor=input.color(color.rgb(7,10,14),"Panel",inline="C",group=G6,display=display.none)
+color headerColor=input.color(color.rgb(20,26,33),"Header",inline="C",group=G6,display=display.none)
+color neutralColor=input.color(color.rgb(204,211,218),"Neutral",inline="D",group=G6,display=display.none)
+color warningColor=input.color(color.rgb(240,158,38),"Warning",inline="D",group=G6,display=display.none)
+
+color premiumFrameColor=color.rgb(66,75,86)
+color premiumTextColor=color.rgb(239,243,247)
+
+//--------------------------------------------------------------------------------------------------
+// v4.5.11 stable historical-marker guarantees
+//--------------------------------------------------------------------------------------------------
+// • v4.5.2 timeframe routing, map drawings, zone sizes, TP/SL, dashboard and alerts are preserved.
+// • The proven v4.5.2 drawing, READY/LIVE, marker, dashboard and timeframe-routing behavior is preserved.
+// • Previous-day / Asian / London sweep-reclaim, EMA13 slope + EMA50 regime,
+//   displacement CHOCH and daily VWAP are additive quality evidence.
+// • Premium liquidity reclaim and displacement CHOCH can also provide fresh confirmation,
+//   increasing opportunities without making all five additions compulsory.
+// • Counter-trend setups require completed sweep-reclaim or displacement-quality CHOCH.
+// • Historical markers remain timestamp-anchored to avoid TradingView's 10,000-bar limit.
+// • Break-even arms after the timeframe-scaled favorable move and exits at entry on a later reclaim.
+// • READY, ACTIVE, TP, SL and BE alerts use the EZYMAP • SCALP MASTERY templates.
+// • LIVE is committed only on the completed chart candle; chart and alert use the same snapshot.
+// • Realtime LIVE markers are stored only after the matching alert() call executes.
+// • Historical markers are reconstructed independently and never generate alerts.
+// • A single permanent ledger keeps the newest 33 BUY/SELL markers stable.
+// • Marker labels are created once and are not deleted/rebuilt on every live tick.
+// • Historical bars never update alert deduplication keys.
+// • The engine resets simulated historical trade state before realtime monitoring begins.
+//--------------------------------------------------------------------------------------------------
+// Pro V1 additions on top of all of the above (see the header block):
+// dual independent BUY/SELL READY slots, LOW RISK zone for counter-trend,
+// and confluence count no longer gates arming or LIVE release — it is
+// display-only (the CONFIDENCE field). Every guarantee above still holds.
+//--------------------------------------------------------------------------------------------------
+
+//--------------------------------------------------------------------------------------------------
+// Timeframe routing
+//--------------------------------------------------------------------------------------------------
+float chartSeconds=timeframe.in_seconds()
+bool supportedChartTf=chartSeconds==60.0 or chartSeconds==300.0 or chartSeconds==900.0 or chartSeconds==1800.0 or chartSeconds==3600.0 or chartSeconds==14400.0
+string actualChartTf=chartSeconds==60.0?"1":chartSeconds==300.0?"5":chartSeconds==900.0?"15":chartSeconds==1800.0?"30":chartSeconds==3600.0?"60":chartSeconds==14400.0?"240":"15"
+
+// AUTO follows the actual chart. Manual selection remains available, but the
+// chart must match the selected chart timeframe for signal processing.
+string selectedChartTf=chartTfSelection=="AUTO"?actualChartTf:chartTfSelection
+string mode=selectedChartTf=="1" or selectedChartTf=="5"?"SCALP":selectedChartTf=="15" or selectedChartTf=="30"?"INTRADAY":"SWING"
+
+// Exact routing matrix:
+// M1  -> M30 direction / M5 support / M1 entry
+// M5  -> H1 direction / M15 support / M5 entry
+// M15 -> H4 direction / M30 support / M15 entry
+// M30 -> Daily direction / H1 support / M30 entry
+// H1  -> Weekly direction / H4 support / H1 entry
+// H4  -> Monthly direction / Daily support / H4 entry
+string directionTf=selectedChartTf=="1"?"30":selectedChartTf=="5"?"60":selectedChartTf=="15"?"240":selectedChartTf=="30"?"D":selectedChartTf=="60"?"W":"M"
+string supportTf=selectedChartTf=="1"?"5":selectedChartTf=="5"?"15":selectedChartTf=="15"?"30":selectedChartTf=="30"?"60":selectedChartTf=="60"?"240":"D"
+string entryTf=selectedChartTf
+
+string entryTfLabel=entryTf=="1"?"M1":entryTf=="5"?"M5":entryTf=="15"?"M15":entryTf=="30"?"M30":entryTf=="60"?"H1":"H4"
+
+float selectedChartSeconds=selectedChartTf=="1"?60.0:selectedChartTf=="5"?300.0:selectedChartTf=="15"?900.0:selectedChartTf=="30"?1800.0:selectedChartTf=="60"?3600.0:14400.0
+float supportSeconds=supportTf=="5"?300.0:supportTf=="15"?900.0:supportTf=="30"?1800.0:supportTf=="60"?3600.0:supportTf=="240"?14400.0:86400.0
+float entrySeconds=entryTf=="1"?60.0:entryTf=="5"?300.0:entryTf=="15"?900.0:entryTf=="30"?1800.0:entryTf=="60"?3600.0:14400.0
+bool chartMatchesSelected=supportedChartTf and chartSeconds==selectedChartSeconds
+
+//--------------------------------------------------------------------------------------------------
+// Helpers
+//--------------------------------------------------------------------------------------------------
+f_price(float value)=>na(value)?"—":str.tostring(value,format.mintick)
+f_zone(float lo,float hi)=>na(lo) or na(hi)?"—":f_price(lo)+" – "+f_price(hi)
+f_overlap(float lo,float hi,float zoneLo,float zoneHi)=>not na(lo) and not na(hi) and not na(zoneLo) and not na(zoneHi) and hi>=zoneLo and lo<=zoneHi
+
+f_confidence_label(int confluences)=>
+    confluences>=7?"QUALITY":confluences>=4?"GOOD":"STANDARD"
+
+// First-touch proxy for historical bars and live ticks.
+// Open inside zone -> open.
+// Approach from above -> upper edge.
+// Approach from below -> lower edge.
+// Live price inside zone -> current live price.
+f_touch_entry(float zoneLo,float zoneHi,float previousClose,float barOpen,float livePrice)=>
+    float result=na
+    if barOpen>=zoneLo and barOpen<=zoneHi
+        result:=barOpen
+    else if livePrice>=zoneLo and livePrice<=zoneHi
+        result:=livePrice
+    else if previousClose>zoneHi
+        result:=zoneHi
+    else if previousClose<zoneLo
+        result:=zoneLo
+    else
+        result:=math.min(math.max(livePrice,zoneLo),zoneHi)
+    math.round_to_mintick(result)
+f_near(float a,float b,float tolerance)=>not na(a) and not na(b) and math.abs(a-b)<=tolerance
+f_clamp(float value,float minimum,float maximum)=>math.max(minimum,math.min(maximum,value))
+f_signed(float value)=>na(value)?"—":(value>0?"+":"")+str.tostring(int(math.round(value)))+" PIPS"
+
+f_project(float newestValue,float olderValue,float newestBar,float olderBar,float currentBar)=>
+    bool valid=not na(newestValue) and not na(olderValue) and not na(newestBar) and not na(olderBar) and newestBar!=olderBar
+    valid?newestValue+(newestValue-olderValue)/(newestBar-olderBar)*(currentBar-newestBar):na
+
+f_near_round(float value,float step,float tolerance)=>
+    if na(value) or step<=0
+        false
+    else
+        float nearest=math.round(value/step)*step
+        math.abs(value-nearest)<=tolerance
+
+f_direction_bank()=>
+    [close[1],close[2],close[3],close[4],close[5],close[6],close[7],close[8],close[9],close[10],close[11],close[12],close[13],close[14],close[15],close[16],close[17],close[18],close[19],close[20],close[21],close[22],close[23],close[24],close[25],close[26],close[27],close[28],close[29],close[30],close[31],close[32],close[33],close[34],close[35],close[36],close[37],close[38],close[39],close[40],close[41],close[42],close[43],close[44],close[45],close[46],close[47],close[48],close[49],close[50],close[51],close[52],close[53],close[54],close[55],close[56],close[57],close[58],close[59],close[60],close[61],close[62],close[63],close[64]]
+
+f_support_bank()=>
+    [high[1],high[2],high[3],high[4],high[5],high[6],high[7],high[8],high[9],high[10],high[11],high[12],high[13],high[14],high[15],high[16],high[17],high[18],high[19],high[20],high[21],high[22],high[23],high[24],high[25],high[26],high[27],high[28],high[29],high[30],high[31],high[32],high[33],high[34],high[35],high[36],high[37],high[38],high[39],high[40],low[1],low[2],low[3],low[4],low[5],low[6],low[7],low[8],low[9],low[10],low[11],low[12],low[13],low[14],low[15],low[16],low[17],low[18],low[19],low[20],low[21],low[22],low[23],low[24],low[25],low[26],low[27],low[28],low[29],low[30],low[31],low[32],low[33],low[34],low[35],low[36],low[37],low[38],low[39],low[40],close[1],close[2],close[3],close[4],close[5],close[6],close[7],close[8],close[9],close[10],close[11],close[12],close[13],close[14],close[15],close[16],close[17],close[18],close[19],close[20],close[21],close[22],close[23],close[24],close[25],close[26],close[27],close[28],close[29],close[30],close[31],close[32],close[33],close[34],close[35],close[36],close[37],close[38],close[39],close[40],time[1],time[2],time[3],time[4],time[5],time[6],time[7],time[8],time[9],time[10],time[11],time[12],time[13],time[14],time[15],time[16],time[17],time[18],time[19],time[20],time[21],time[22],time[23],time[24],time[25],time[26],time[27],time[28],time[29],time[30],time[31],time[32],time[33],time[34],time[35],time[36],time[37],time[38],time[39],time[40]]
+
+f_entry_bank()=>
+    [open[1],open[2],high[1],high[2],high[3],high[4],high[5],high[6],high[7],high[8],high[9],high[10],high[11],high[12],high[13],high[14],high[15],high[16],high[17],high[18],high[19],high[20],high[21],high[22],high[23],high[24],low[1],low[2],low[3],low[4],low[5],low[6],low[7],low[8],low[9],low[10],low[11],low[12],low[13],low[14],low[15],low[16],low[17],low[18],low[19],low[20],low[21],low[22],low[23],low[24],close[1],close[2],time[1],time[2],time[3],time[4],time[5],time[6],time[7],time[8],time[9],time[10],time[11],time[12],time[13],time[14],time[15],time[16],time[17],time[18],time[19],time[20],time[21],time[22],time[23],time[24]]
+
+f_support_metrics(int pivotBars,int emaLength)=>
+    float pivotHigh=ta.pivothigh(high,pivotBars,pivotBars)
+    float pivotLow=ta.pivotlow(low,pivotBars,pivotBars)
+    float newestHigh=ta.valuewhen(not na(pivotHigh),pivotHigh,0)
+    float olderHigh=ta.valuewhen(not na(pivotHigh),pivotHigh,1)
+    float newestHighBar=ta.valuewhen(not na(pivotHigh),float(bar_index[pivotBars]),0)
+    float olderHighBar=ta.valuewhen(not na(pivotHigh),float(bar_index[pivotBars]),1)
+    float newestLow=ta.valuewhen(not na(pivotLow),pivotLow,0)
+    float olderLow=ta.valuewhen(not na(pivotLow),pivotLow,1)
+    float newestLowBar=ta.valuewhen(not na(pivotLow),float(bar_index[pivotBars]),0)
+    float olderLowBar=ta.valuewhen(not na(pivotLow),float(bar_index[pivotBars]),1)
+    float projectedResistance=f_project(newestHigh,olderHigh,newestHighBar,olderHighBar,float(bar_index))
+    float projectedSupport=f_project(newestLow,olderLow,newestLowBar,olderLowBar,float(bar_index))
+    [ta.ema(close,emaLength)[1],projectedSupport[1],projectedResistance[1],newestHigh[1],newestLow[1],ta.atr(14)[1]]
+
+// S2 must be at least minimumDistance below S1.
+// R2 must be at least minimumDistance above R1.
+f_pick_direction_levels(array<float> closes,float reference,float minimumDistance,float fallbackLow,float fallbackHigh,float fallbackATR)=>
+    float s1=na
+    float s2=na
+    float r1=na
+    float r2=na
+    float s1Distance=na
+    float s2Distance=na
+    float r1Distance=na
+    float r2Distance=na
+
+    for i=0 to array.size(closes)-1
+        float level=array.get(closes,i)
+        if not na(level) and level<reference
+            float distance=reference-level
+            if na(s1Distance) or distance<s1Distance
+                s1:=level
+                s1Distance:=distance
+        if not na(level) and level>reference
+            float distance=level-reference
+            if na(r1Distance) or distance<r1Distance
+                r1:=level
+                r1Distance:=distance
+
+    for i=0 to array.size(closes)-1
+        float level=array.get(closes,i)
+        if not na(level) and not na(s1) and level<=s1-minimumDistance
+            float distance=s1-level
+            if na(s2Distance) or distance<s2Distance
+                s2:=level
+                s2Distance:=distance
+        if not na(level) and not na(r1) and level>=r1+minimumDistance
+            float distance=level-r1
+            if na(r2Distance) or distance<r2Distance
+                r2:=level
+                r2Distance:=distance
+
+    float safeATR=math.max(nz(fallbackATR),minimumDistance*5.0)
+    if na(s1)
+        s1:=math.min(nz(fallbackLow,reference-safeATR),reference-minimumDistance)
+    if na(r1)
+        r1:=math.max(nz(fallbackHigh,reference+safeATR),reference+minimumDistance)
+    if na(s2)
+        s2:=math.min(nz(fallbackLow,s1-safeATR),s1-minimumDistance)
+    if na(r2)
+        r2:=math.max(nz(fallbackHigh,r1+safeATR),r1+minimumDistance)
+
+    [math.round_to_mintick(s1),math.round_to_mintick(s2),math.round_to_mintick(r1),math.round_to_mintick(r2)]
+
+f_support_zone(float level,bool isSupport,array<float> highs,array<float> lows,array<float> closes,array<int> times)=>
+    float nearestLo=na
+    float nearestHi=na
+    float nearestClose=na
+    int nearestTime=na
+    float fallbackRange=na
+    float fallbackDistance=na
+    int fallbackTime=na
+
+    for i=0 to array.size(highs)-1
+        float candleHigh=array.get(highs,i)
+        float candleLow=array.get(lows,i)
+        float candleClose=array.get(closes,i)
+        int candleTime=array.get(times,i)
+        bool valid=not na(candleHigh) and not na(candleLow) and candleHigh>candleLow
+
+        if valid
+            bool crosses=candleLow<=level and candleHigh>=level
+            // Arrays are newest first, so the first crossing candle found is
+            // the one nearest to CMP — that single candle defines the zone.
+            if crosses and na(nearestLo)
+                nearestLo:=candleLow
+                nearestHi:=candleHigh
+                nearestClose:=candleClose
+                nearestTime:=candleTime
+
+            float midpoint=(candleHigh+candleLow)/2.0
+            float distance=math.abs(midpoint-level)
+            if na(fallbackDistance) or distance<fallbackDistance
+                fallbackDistance:=distance
+                fallbackRange:=candleHigh-candleLow
+                fallbackTime:=candleTime
+
+    float zoneLo=na
+    float zoneHi=na
+    int zoneTime=na
+    float minHeight=syminfo.mintick*10.0
+
+    if not na(nearestLo)
+        // The zone is the rejection wick only, not the full candle range:
+        // low-to-close for a support/BUY zone, close-to-high for a
+        // resistance/SELL zone. A minimum height guards against a candle
+        // that closed exactly at its high or low producing a zero-height zone.
+        if isSupport
+            zoneLo:=nearestLo
+            zoneHi:=nearestClose
+            if zoneHi-zoneLo<minHeight
+                zoneLo:=zoneHi-minHeight
+        else
+            zoneLo:=nearestClose
+            zoneHi:=nearestHi
+            if zoneHi-zoneLo<minHeight
+                zoneHi:=zoneLo+minHeight
+        zoneTime:=nearestTime
+    else
+        float preservedRange=math.max(nz(fallbackRange),syminfo.mintick*10.0)
+        zoneLo:=level-preservedRange*0.5
+        zoneHi:=level+preservedRange*0.5
+        zoneTime:=fallbackTime
+
+    [math.round_to_mintick(zoneLo),math.round_to_mintick(zoneHi),zoneTime]
+
+f_zone_retest_count(float zoneLo,float zoneHi,int zoneTime,int currentEntryTime,float zoneSeconds,array<float> highs,array<float> lows,array<int> times)=>
+    int retests=0
+    bool previousInside=false
+    int zoneReadyTime=not na(zoneTime)?zoneTime+int(zoneSeconds*1000.0):na
+
+    if not na(zoneLo) and not na(zoneHi) and not na(zoneReadyTime) and not na(currentEntryTime)
+        // Oldest to newest: one continuous visit counts as one retest.
+        for offset=0 to array.size(highs)-1
+            int i=array.size(highs)-1-offset
+            int candleTime=array.get(times,i)
+            float candleHigh=array.get(highs,i)
+            float candleLow=array.get(lows,i)
+            bool eligible=not na(candleTime) and candleTime>=zoneReadyTime and candleTime<=currentEntryTime
+            bool inside=eligible and f_overlap(candleLow,candleHigh,zoneLo,zoneHi)
+
+            if eligible
+                if inside and not previousInside
+                    retests+=1
+                previousInside:=inside
+
+    retests
+
+f_recent_extremes(array<float> highs,array<float> lows,int lookback)=>
+    float recentHigh=na
+    float recentLow=na
+    int limit=math.min(array.size(highs)-1,math.max(1,lookback))
+
+    // Index 0 is the latest confirmed entry-timeframe candle.
+    // Start at 1 so the liquidity pool exists before the sweep candle.
+    for i=1 to limit
+        float candidateHigh=array.get(highs,i)
+        float candidateLow=array.get(lows,i)
+        recentHigh:=na(recentHigh)?candidateHigh:math.max(recentHigh,candidateHigh)
+        recentLow:=na(recentLow)?candidateLow:math.min(recentLow,candidateLow)
+
+    [recentHigh,recentLow]
+
+f_mtf_cluster(float directionLevel,float zoneLo,float zoneHi,float supportA,float supportB,float supportC,float entryLevel,float tolerance)=>
+    float midpoint=(zoneLo+zoneHi)/2.0
+    bool supportVote=f_near(directionLevel,supportA,tolerance) or f_near(directionLevel,supportB,tolerance) or f_near(directionLevel,supportC,tolerance)
+    bool entryVote=f_near(directionLevel,entryLevel,tolerance) or f_near(midpoint,entryLevel,tolerance)
+    supportVote and entryVote
+
+f_confluence_count(float zoneLo,float zoneHi,float level,float emaValue,float trendValue,float fib50,float fib618,float brnStep,float microStep,float tolerance,bool mtfCluster,bool sweepReclaim,bool premiumLiquidity,bool displacementChoch,bool emaSlope,bool emaRegime,bool vwapConfluence,bool fvgFill)=>
+    float midpoint=(zoneLo+zoneHi)/2.0
+    // The direction-timeframe S&R level is the base prerequisite.
+    // Related evidence is category-capped so correlated indicators do not inflate the score.
+    int count=1
+    bool brn=f_near_round(midpoint,brnStep,tolerance)
+    bool micro=not brn and f_near_round(midpoint,microStep,tolerance)
+    bool ema=f_near(midpoint,emaValue,tolerance)
+    bool trend=f_near(midpoint,trendValue,tolerance)
+    bool fib=f_near(midpoint,fib50,tolerance) or f_near(midpoint,fib618,tolerance)
+
+    count+=((brn or micro)?1:0)                         // One round-number category only.
+    count+=(ema?1:0)
+    count+=(trend?1:0)
+    count+=(fib?1:0)
+    count+=(mtfCluster?2:0)                          // Cross-timeframe agreement is stronger.
+    count+=(premiumLiquidity?2:(sweepReclaim?1:0))  // Premium session/day sweep supersedes ordinary sweep.
+    count+=(displacementChoch?2:0)
+    count+=(emaSlope?1:0)
+    count+=(emaRegime?1:0)
+    count+=(vwapConfluence?1:0)
+    count+=(fvgFill?1:0)
+    count
+
+f_nearest_above4(float reference,float a,float b,float c,float d)=>
+    float result=na
+    if not na(a) and a>reference
+        result:=a
+    if not na(b) and b>reference and (na(result) or b<result)
+        result:=b
+    if not na(c) and c>reference and (na(result) or c<result)
+        result:=c
+    if not na(d) and d>reference and (na(result) or d<result)
+        result:=d
+    result
+
+f_nearest_below4(float reference,float a,float b,float c,float d)=>
+    float result=na
+    if not na(a) and a<reference
+        result:=a
+    if not na(b) and b<reference and (na(result) or b>result)
+        result:=b
+    if not na(c) and c<reference and (na(result) or c>result)
+        result:=c
+    if not na(d) and d<reference and (na(result) or d>result)
+        result:=d
+    result
+
+//--------------------------------------------------------------------------------------------------
+// Gold / BTC pip and round-number engine
+//--------------------------------------------------------------------------------------------------
+string symbolKey=str.upper(syminfo.ticker+" "+syminfo.root+" "+syminfo.description)
+bool isGold=str.contains(symbolKey,"XAU") or str.contains(symbolKey,"GOLD")
+bool isBTC=str.contains(symbolKey,"BTC") or str.contains(symbolKey,"XBT")
+float pipSize=isGold?math.max(0.10,syminfo.mintick):isBTC?math.max(1.0,syminfo.mintick):syminfo.mintick
+float brnStep=isGold?100.0:isBTC?1000.0:math.max(close*0.01,syminfo.mintick*100.0)
+float microBrnStep=isGold?50.0:isBTC?500.0:brnStep*0.5
+float confluenceTolerance=confluenceTolerancePips*pipSize
+// Break-even activation uses M15 = 25 pips as the standard and square-root
+// volatility-time scaling for the other supported chart timeframes. Defaults:
+// M1 6 • M5 14 • M15 25 • M30 35 • H1 50 • H4 100 strategy pips.
+float breakEvenTimeScale=math.sqrt(entrySeconds/900.0)
+float breakEvenTriggerPips=math.max(1.0,math.round(breakEvenM15TriggerPips*breakEvenTimeScale))
+float breakEvenTriggerDistance=breakEvenTriggerPips*pipSize
+// Minimum second-level distance:
+// XAUUSD: 70 points. With 0.10 per Gold point, this equals 7.0 price.
+// BTCUSD: 70 points. With 1.00 per BTC point, this equals 70.0 price.
+float goldSecondLevelDistance=70.0*pipSize
+float btcSecondLevelDistance=70.0*pipSize
+float minimumLevelDistance=isGold?goldSecondLevelDistance:isBTC?btcSecondLevelDistance:math.max(levelDistinctPips*pipSize,syminfo.mintick*5.0)
+float stopBufferPips=mode=="SCALP"?scalpStopPips:mode=="INTRADAY"?intradayStopPips:swingStopPips
+float targetMinimumPoints=mode=="SCALP"?scalpTargetMinPoints:mode=="INTRADAY"?intradayTargetMinPoints:swingTargetMinPoints
+float targetMaximumPoints=mode=="SCALP"?scalpTargetMaxPoints:mode=="INTRADAY"?intradayTargetMaxPoints:swingTargetMaxPoints
+float targetMinimumDistance=targetMinimumPoints*pipSize
+float targetMaximumDistance=targetMaximumPoints*pipSize
+float targetATRMultiplier=mode=="SCALP"?0.60:mode=="INTRADAY"?1.0:1.5
+float stopATRMultiplier=mode=="SCALP"?0.40:mode=="INTRADAY"?0.60:0.85
+int resultTTL=resultVisibleSeconds*1000
+float chartATR=ta.atr(14)
+float confirmedChartATR=ta.atr(14)[1]
+
+//--------------------------------------------------------------------------------------------------
+// Session / previous-day liquidity and daily VWAP context
+//--------------------------------------------------------------------------------------------------
+bool asiaActive=not na(time(timeframe.period,asiaSession,liquidityTimezone))
+bool londonActive=not na(time(timeframe.period,londonSession,liquidityTimezone))
+bool asiaWasActive=bar_index>0?asiaActive[1]:false
+bool londonWasActive=bar_index>0?londonActive[1]:false
+bool asiaStarted=asiaActive and not asiaWasActive
+bool londonStarted=londonActive and not londonWasActive
+bool asiaEnded=not asiaActive and asiaWasActive
+bool londonEnded=not londonActive and londonWasActive
+
+var float asiaRunningHigh=na
+var float asiaRunningLow=na
+var float completedAsiaHigh=na
+var float completedAsiaLow=na
+var int completedAsiaAt=na
+var float londonRunningHigh=na
+var float londonRunningLow=na
+var float completedLondonHigh=na
+var float completedLondonLow=na
+var int completedLondonAt=na
+
+if asiaStarted
+    asiaRunningHigh:=high
+    asiaRunningLow:=low
+else if asiaActive
+    asiaRunningHigh:=na(asiaRunningHigh)?high:math.max(asiaRunningHigh,high)
+    asiaRunningLow:=na(asiaRunningLow)?low:math.min(asiaRunningLow,low)
+if asiaEnded
+    completedAsiaHigh:=asiaRunningHigh
+    completedAsiaLow:=asiaRunningLow
+    completedAsiaAt:=time
+    asiaRunningHigh:=na
+    asiaRunningLow:=na
+
+if londonStarted
+    londonRunningHigh:=high
+    londonRunningLow:=low
+else if londonActive
+    londonRunningHigh:=na(londonRunningHigh)?high:math.max(londonRunningHigh,high)
+    londonRunningLow:=na(londonRunningLow)?low:math.min(londonRunningLow,low)
+if londonEnded
+    completedLondonHigh:=londonRunningHigh
+    completedLondonLow:=londonRunningLow
+    completedLondonAt:=time
+    londonRunningHigh:=na
+    londonRunningLow:=na
+
+int sessionLevelMaxAgeMs=sessionLevelMaxAgeHours*60*60*1000
+bool asiaLevelFresh=not na(completedAsiaAt) and time-completedAsiaAt<=sessionLevelMaxAgeMs
+bool londonLevelFresh=not na(completedLondonAt) and time-completedLondonAt<=sessionLevelMaxAgeMs
+
+// Daily VWAP uses the chart's actual volume series. On OANDA spot gold this is
+// broker tick activity; it is therefore a soft confluence, never a hard filter.
+bool newVwapDay=timeframe.change("D")
+float vwapBarVolume=nz(volume,0.0)
+var float dailyVwapPV=na
+var float dailyVwapVolume=na
+if newVwapDay or na(dailyVwapPV)
+    dailyVwapPV:=hlc3*vwapBarVolume
+    dailyVwapVolume:=vwapBarVolume
+else
+    dailyVwapPV+=hlc3*vwapBarVolume
+    dailyVwapVolume+=vwapBarVolume
+float dailyVWAPRaw=not na(dailyVwapVolume) and dailyVwapVolume>0?dailyVwapPV/dailyVwapVolume:na
+float entryVWAP=dailyVWAPRaw[1]
+float entryVWAPPrevious=dailyVWAPRaw[2]
+
+//--------------------------------------------------------------------------------------------------
+// Confirmed timeframe data
+//--------------------------------------------------------------------------------------------------
+[entryReference,entryBiasEMA]=request.security(
+    syminfo.tickerid,entryTf,
+    [close[1],ta.ema(close,directionEmaLength)[1]],
+    gaps=barmerge.gaps_off,lookahead=barmerge.lookahead_on)
+
+[dirCloseBank1,dirCloseBank2,dirCloseBank3,dirCloseBank4,dirCloseBank5,dirCloseBank6,dirCloseBank7,dirCloseBank8,dirCloseBank9,dirCloseBank10,dirCloseBank11,dirCloseBank12,dirCloseBank13,dirCloseBank14,dirCloseBank15,dirCloseBank16,dirCloseBank17,dirCloseBank18,dirCloseBank19,dirCloseBank20,dirCloseBank21,dirCloseBank22,dirCloseBank23,dirCloseBank24,dirCloseBank25,dirCloseBank26,dirCloseBank27,dirCloseBank28,dirCloseBank29,dirCloseBank30,dirCloseBank31,dirCloseBank32,dirCloseBank33,dirCloseBank34,dirCloseBank35,dirCloseBank36,dirCloseBank37,dirCloseBank38,dirCloseBank39,dirCloseBank40,dirCloseBank41,dirCloseBank42,dirCloseBank43,dirCloseBank44,dirCloseBank45,dirCloseBank46,dirCloseBank47,dirCloseBank48,dirCloseBank49,dirCloseBank50,dirCloseBank51,dirCloseBank52,dirCloseBank53,dirCloseBank54,dirCloseBank55,dirCloseBank56,dirCloseBank57,dirCloseBank58,dirCloseBank59,dirCloseBank60,dirCloseBank61,dirCloseBank62,dirCloseBank63,dirCloseBank64]=request.security(syminfo.tickerid,directionTf,f_direction_bank(),gaps=barmerge.gaps_off,lookahead=barmerge.lookahead_on)
+array<float> directionCloses=array.from(dirCloseBank1,dirCloseBank2,dirCloseBank3,dirCloseBank4,dirCloseBank5,dirCloseBank6,dirCloseBank7,dirCloseBank8,dirCloseBank9,dirCloseBank10,dirCloseBank11,dirCloseBank12,dirCloseBank13,dirCloseBank14,dirCloseBank15,dirCloseBank16,dirCloseBank17,dirCloseBank18,dirCloseBank19,dirCloseBank20,dirCloseBank21,dirCloseBank22,dirCloseBank23,dirCloseBank24,dirCloseBank25,dirCloseBank26,dirCloseBank27,dirCloseBank28,dirCloseBank29,dirCloseBank30,dirCloseBank31,dirCloseBank32,dirCloseBank33,dirCloseBank34,dirCloseBank35,dirCloseBank36,dirCloseBank37,dirCloseBank38,dirCloseBank39,dirCloseBank40,dirCloseBank41,dirCloseBank42,dirCloseBank43,dirCloseBank44,dirCloseBank45,dirCloseBank46,dirCloseBank47,dirCloseBank48,dirCloseBank49,dirCloseBank50,dirCloseBank51,dirCloseBank52,dirCloseBank53,dirCloseBank54,dirCloseBank55,dirCloseBank56,dirCloseBank57,dirCloseBank58,dirCloseBank59,dirCloseBank60,dirCloseBank61,dirCloseBank62,dirCloseBank63,dirCloseBank64)
+
+[directionClose,directionEMA,directionEMAPrevious,directionEMA50,directionEMA50Previous,directionATR,directionLowest,directionHighest]=request.security(
+    syminfo.tickerid,directionTf,
+    [close[1],ta.ema(close,directionEmaLength)[1],ta.ema(close,directionEmaLength)[2],ta.ema(close,regimeEmaLength)[1],ta.ema(close,regimeEmaLength)[2],ta.atr(14)[1],ta.lowest(low,100)[1],ta.highest(high,100)[1]],
+    gaps=barmerge.gaps_off,lookahead=barmerge.lookahead_on)
+
+[supportHigh1,supportHigh2,supportHigh3,supportHigh4,supportHigh5,supportHigh6,supportHigh7,supportHigh8,supportHigh9,supportHigh10,supportHigh11,supportHigh12,supportHigh13,supportHigh14,supportHigh15,supportHigh16,supportHigh17,supportHigh18,supportHigh19,supportHigh20,supportHigh21,supportHigh22,supportHigh23,supportHigh24,supportHigh25,supportHigh26,supportHigh27,supportHigh28,supportHigh29,supportHigh30,supportHigh31,supportHigh32,supportHigh33,supportHigh34,supportHigh35,supportHigh36,supportHigh37,supportHigh38,supportHigh39,supportHigh40,supportLow1,supportLow2,supportLow3,supportLow4,supportLow5,supportLow6,supportLow7,supportLow8,supportLow9,supportLow10,supportLow11,supportLow12,supportLow13,supportLow14,supportLow15,supportLow16,supportLow17,supportLow18,supportLow19,supportLow20,supportLow21,supportLow22,supportLow23,supportLow24,supportLow25,supportLow26,supportLow27,supportLow28,supportLow29,supportLow30,supportLow31,supportLow32,supportLow33,supportLow34,supportLow35,supportLow36,supportLow37,supportLow38,supportLow39,supportLow40,supportClose1,supportClose2,supportClose3,supportClose4,supportClose5,supportClose6,supportClose7,supportClose8,supportClose9,supportClose10,supportClose11,supportClose12,supportClose13,supportClose14,supportClose15,supportClose16,supportClose17,supportClose18,supportClose19,supportClose20,supportClose21,supportClose22,supportClose23,supportClose24,supportClose25,supportClose26,supportClose27,supportClose28,supportClose29,supportClose30,supportClose31,supportClose32,supportClose33,supportClose34,supportClose35,supportClose36,supportClose37,supportClose38,supportClose39,supportClose40,supportTime1,supportTime2,supportTime3,supportTime4,supportTime5,supportTime6,supportTime7,supportTime8,supportTime9,supportTime10,supportTime11,supportTime12,supportTime13,supportTime14,supportTime15,supportTime16,supportTime17,supportTime18,supportTime19,supportTime20,supportTime21,supportTime22,supportTime23,supportTime24,supportTime25,supportTime26,supportTime27,supportTime28,supportTime29,supportTime30,supportTime31,supportTime32,supportTime33,supportTime34,supportTime35,supportTime36,supportTime37,supportTime38,supportTime39,supportTime40]=request.security(syminfo.tickerid,supportTf,f_support_bank(),gaps=barmerge.gaps_off,lookahead=barmerge.lookahead_on)
+array<float> supportHighs=array.from(supportHigh1,supportHigh2,supportHigh3,supportHigh4,supportHigh5,supportHigh6,supportHigh7,supportHigh8,supportHigh9,supportHigh10,supportHigh11,supportHigh12,supportHigh13,supportHigh14,supportHigh15,supportHigh16,supportHigh17,supportHigh18,supportHigh19,supportHigh20,supportHigh21,supportHigh22,supportHigh23,supportHigh24,supportHigh25,supportHigh26,supportHigh27,supportHigh28,supportHigh29,supportHigh30,supportHigh31,supportHigh32,supportHigh33,supportHigh34,supportHigh35,supportHigh36,supportHigh37,supportHigh38,supportHigh39,supportHigh40)
+array<float> supportLows=array.from(supportLow1,supportLow2,supportLow3,supportLow4,supportLow5,supportLow6,supportLow7,supportLow8,supportLow9,supportLow10,supportLow11,supportLow12,supportLow13,supportLow14,supportLow15,supportLow16,supportLow17,supportLow18,supportLow19,supportLow20,supportLow21,supportLow22,supportLow23,supportLow24,supportLow25,supportLow26,supportLow27,supportLow28,supportLow29,supportLow30,supportLow31,supportLow32,supportLow33,supportLow34,supportLow35,supportLow36,supportLow37,supportLow38,supportLow39,supportLow40)
+array<float> supportCloses=array.from(supportClose1,supportClose2,supportClose3,supportClose4,supportClose5,supportClose6,supportClose7,supportClose8,supportClose9,supportClose10,supportClose11,supportClose12,supportClose13,supportClose14,supportClose15,supportClose16,supportClose17,supportClose18,supportClose19,supportClose20,supportClose21,supportClose22,supportClose23,supportClose24,supportClose25,supportClose26,supportClose27,supportClose28,supportClose29,supportClose30,supportClose31,supportClose32,supportClose33,supportClose34,supportClose35,supportClose36,supportClose37,supportClose38,supportClose39,supportClose40)
+array<int> supportTimes=array.from(supportTime1,supportTime2,supportTime3,supportTime4,supportTime5,supportTime6,supportTime7,supportTime8,supportTime9,supportTime10,supportTime11,supportTime12,supportTime13,supportTime14,supportTime15,supportTime16,supportTime17,supportTime18,supportTime19,supportTime20,supportTime21,supportTime22,supportTime23,supportTime24,supportTime25,supportTime26,supportTime27,supportTime28,supportTime29,supportTime30,supportTime31,supportTime32,supportTime33,supportTime34,supportTime35,supportTime36,supportTime37,supportTime38,supportTime39,supportTime40)
+
+[supportEMA,supportTrendSupport,supportTrendResistance,supportSwingHigh,supportSwingLow,supportATR]=request.security(
+    syminfo.tickerid,supportTf,f_support_metrics(supportPivotBars,directionEmaLength),
+    gaps=barmerge.gaps_off,lookahead=barmerge.lookahead_on)
+
+[entryOpen1,entryOpen2,entryHigh1,entryHigh2,entryHigh3,entryHigh4,entryHigh5,entryHigh6,entryHigh7,entryHigh8,entryHigh9,entryHigh10,entryHigh11,entryHigh12,entryHigh13,entryHigh14,entryHigh15,entryHigh16,entryHigh17,entryHigh18,entryHigh19,entryHigh20,entryHigh21,entryHigh22,entryHigh23,entryHigh24,entryLow1,entryLow2,entryLow3,entryLow4,entryLow5,entryLow6,entryLow7,entryLow8,entryLow9,entryLow10,entryLow11,entryLow12,entryLow13,entryLow14,entryLow15,entryLow16,entryLow17,entryLow18,entryLow19,entryLow20,entryLow21,entryLow22,entryLow23,entryLow24,entryClose1,entryClose2,entryTime1,entryTime2,entryTime3,entryTime4,entryTime5,entryTime6,entryTime7,entryTime8,entryTime9,entryTime10,entryTime11,entryTime12,entryTime13,entryTime14,entryTime15,entryTime16,entryTime17,entryTime18,entryTime19,entryTime20,entryTime21,entryTime22,entryTime23,entryTime24]=request.security(syminfo.tickerid,entryTf,f_entry_bank(),gaps=barmerge.gaps_off,lookahead=barmerge.lookahead_on)
+array<float> entryHighs=array.from(entryHigh1,entryHigh2,entryHigh3,entryHigh4,entryHigh5,entryHigh6,entryHigh7,entryHigh8,entryHigh9,entryHigh10,entryHigh11,entryHigh12,entryHigh13,entryHigh14,entryHigh15,entryHigh16,entryHigh17,entryHigh18,entryHigh19,entryHigh20,entryHigh21,entryHigh22,entryHigh23,entryHigh24)
+array<float> entryLows=array.from(entryLow1,entryLow2,entryLow3,entryLow4,entryLow5,entryLow6,entryLow7,entryLow8,entryLow9,entryLow10,entryLow11,entryLow12,entryLow13,entryLow14,entryLow15,entryLow16,entryLow17,entryLow18,entryLow19,entryLow20,entryLow21,entryLow22,entryLow23,entryLow24)
+array<int> entryTimes=array.from(entryTime1,entryTime2,entryTime3,entryTime4,entryTime5,entryTime6,entryTime7,entryTime8,entryTime9,entryTime10,entryTime11,entryTime12,entryTime13,entryTime14,entryTime15,entryTime16,entryTime17,entryTime18,entryTime19,entryTime20,entryTime21,entryTime22,entryTime23,entryTime24)
+
+[previousDayHigh,previousDayLow]=request.security(
+    syminfo.tickerid,"D",[high[1],low[1]],
+    gaps=barmerge.gaps_off,lookahead=barmerge.lookahead_on)
+
+
+//--------------------------------------------------------------------------------------------------
+// One mapping engine used by both drawing and signals
+//--------------------------------------------------------------------------------------------------
+[S1,S2,R1,R2]=f_pick_direction_levels(directionCloses,entryReference,minimumLevelDistance,directionLowest,directionHighest,directionATR)
+
+bool bullishBias=directionClose>directionEMA
+bool bearishBias=directionClose<directionEMA
+
+// Frequency profile: selected timeframe may sit slightly across EMA13.
+// Direction-timeframe EMA13 bias remains strict.
+float entryBiasTolerance=math.max(nz(supportATR,0.0)*0.60,pipSize*15.0)
+bool entryBullishBias=entryReference>=entryBiasEMA-entryBiasTolerance
+bool entryBearishBias=entryReference<=entryBiasEMA+entryBiasTolerance
+string biasText=bullishBias?"BULLISH":bearishBias?"BEARISH":"NEUTRAL"
+
+float directionSlopeATR=(directionEMA-directionEMAPrevious)/math.max(nz(directionATR,syminfo.mintick),syminfo.mintick)
+bool buyEmaSlopeConfluence=useEmaRegime and directionSlopeATR>=emaSlopeMinATR
+bool sellEmaSlopeConfluence=useEmaRegime and directionSlopeATR<=-emaSlopeMinATR
+bool buyEmaRegimeConfluence=useEmaRegime and directionClose>directionEMA and directionEMA>directionEMA50 and directionEMA50>=directionEMA50Previous
+bool sellEmaRegimeConfluence=useEmaRegime and directionClose<directionEMA and directionEMA<directionEMA50 and directionEMA50<=directionEMA50Previous
+
+
+bool trendBuyRoute=bullishBias and entryBullishBias
+bool trendSellRoute=bearishBias and entryBearishBias
+
+// Counter-trend routes require opposite direction-timeframe bias together with
+// selected/entry-timeframe alignment in the proposed trade direction.
+bool counterTrendBuyRoute=bearishBias and entryBullishBias
+bool counterTrendSellRoute=bullishBias and entryBearishBias
+
+[buyHighLo,buyHighHi,buyHighTime]=f_support_zone(S1,true,supportHighs,supportLows,supportCloses,supportTimes)
+[buyLowLo,buyLowHi,buyLowTime]=f_support_zone(S2,true,supportHighs,supportLows,supportCloses,supportTimes)
+[sellHighLo,sellHighHi,sellHighTime]=f_support_zone(R1,false,supportHighs,supportLows,supportCloses,supportTimes)
+[sellLowLo,sellLowHi,sellLowTime]=f_support_zone(R2,false,supportHighs,supportLows,supportCloses,supportTimes)
+
+// A LOW RISK zone must never end up priced closer to CMP than its matching
+// HIGH RISK zone — the widening above can occasionally push the farther
+// zone's outer edge past the nearer zone's own edge. Clamp it back.
+if buyLowHi>buyHighHi
+    buyLowHi:=buyHighHi
+    buyLowLo:=math.min(buyLowLo,buyLowHi)
+if sellLowLo<sellHighLo
+    sellLowLo:=sellHighLo
+    sellLowHi:=math.max(sellLowHi,sellLowLo)
+
+// Pro V1.8: both the near HIGH RISK zone (S1/R1) and far LOW RISK zone
+// (S2/R2) are independently valid live-signal triggers for both
+// trend-following and counter-trend routes. Each of the four zones
+// (BUY-HIGH, BUY-LOW, SELL-HIGH, SELL-LOW) arms, resyncs, touches and
+// commits independently — up to 4 zones can be READY at once. Only one
+// ACTIVE trade per direction is still allowed at a time (the opposite
+// risk tier of the same direction keeps waiting, exactly like the
+// opposite direction always has).
+bool buyIsCounterTrend=counterTrendBuyRoute and not trendBuyRoute
+bool sellIsCounterTrend=counterTrendSellRoute and not trendSellRoute
+bool allowBuy=trendBuyRoute or buyIsCounterTrend
+bool allowSell=trendSellRoute or sellIsCounterTrend
+
+float supportRange=math.abs(supportSwingHigh-supportSwingLow)
+float buyFib50=not na(supportRange)?supportSwingHigh-supportRange*0.50:na
+float buyFib618=not na(supportRange)?supportSwingHigh-supportRange*0.618:na
+float sellFib50=not na(supportRange)?supportSwingLow+supportRange*0.50:na
+float sellFib618=not na(supportRange)?supportSwingLow+supportRange*0.618:na
+
+[entryClusterHigh,entryClusterLow]=f_recent_extremes(entryHighs,entryLows,sweepLookbackBars)
+float clusterTolerance=math.min(confluenceTolerance,math.max(nz(supportATR,pipSize*20.0)*0.35,pipSize*10.0))
+bool buyHighMtfCluster=useMtfLevelCluster and f_mtf_cluster(S1,buyHighLo,buyHighHi,supportSwingLow,supportTrendSupport,supportEMA,entryClusterLow,clusterTolerance)
+bool buyLowMtfCluster=useMtfLevelCluster and f_mtf_cluster(S2,buyLowLo,buyLowHi,supportSwingLow,supportTrendSupport,supportEMA,entryClusterLow,clusterTolerance)
+bool sellHighMtfCluster=useMtfLevelCluster and f_mtf_cluster(R1,sellHighLo,sellHighHi,supportSwingHigh,supportTrendResistance,supportEMA,entryClusterHigh,clusterTolerance)
+bool sellLowMtfCluster=useMtfLevelCluster and f_mtf_cluster(R2,sellLowLo,sellLowHi,supportSwingHigh,supportTrendResistance,supportEMA,entryClusterHigh,clusterTolerance)
+
+float vwapTolerance=math.max(pipSize*5.0,nz(confirmedChartATR,pipSize*20.0)*vwapToleranceATR)
+float buyHighMid=(buyHighLo+buyHighHi)/2.0
+float buyLowMid=(buyLowLo+buyLowHi)/2.0
+float sellHighMid=(sellHighLo+sellHighHi)/2.0
+float sellLowMid=(sellLowLo+sellLowHi)/2.0
+
+//--------------------------------------------------------------------------------------------------
+// Selected-timeframe confirmation engine
+//--------------------------------------------------------------------------------------------------
+// Confirmation comes from the routed entry timeframe, which may be lower than
+// the chart timeframe. Only confirmed entry-timeframe candles are processed.
+float entryCandleOpen=entryOpen1
+float entryCandleHigh=entryHigh1
+float entryCandleLow=entryLow1
+float entryCandleClose=entryClose1
+int entryCandleTime=entryTime1
+
+float entryPrevClose=entryClose2
+
+bool buyHighVWAPConfluence=useVWAP and not na(entryVWAP) and ((f_near(buyHighMid,entryVWAP,vwapTolerance) and entryVWAP>=entryVWAPPrevious) or (entryCandleLow<entryVWAP and entryCandleClose>entryVWAP))
+bool buyLowVWAPConfluence=useVWAP and not na(entryVWAP) and ((f_near(buyLowMid,entryVWAP,vwapTolerance) and entryVWAP>=entryVWAPPrevious) or (entryCandleLow<entryVWAP and entryCandleClose>entryVWAP))
+bool sellHighVWAPConfluence=useVWAP and not na(entryVWAP) and ((f_near(sellHighMid,entryVWAP,vwapTolerance) and entryVWAP<=entryVWAPPrevious) or (entryCandleHigh>entryVWAP and entryCandleClose<entryVWAP))
+bool sellLowVWAPConfluence=useVWAP and not na(entryVWAP) and ((f_near(sellLowMid,entryVWAP,vwapTolerance) and entryVWAP<=entryVWAPPrevious) or (entryCandleHigh>entryVWAP and entryCandleClose<entryVWAP))
+
+varip int entryStructureDirection=0
+varip int lastProcessedEntryTime=na
+varip float lastBullishSweepLow=na
+varip float lastBullishSweepHigh=na
+varip int lastBullishSweepTime=na
+varip float lastBearishSweepLow=na
+varip float lastBearishSweepHigh=na
+varip int lastBearishSweepTime=na
+varip float lastBullishPremiumSweepLow=na
+varip float lastBullishPremiumSweepHigh=na
+varip int lastBullishPremiumSweepTime=na
+varip string lastBullishPremiumSweepType=""
+varip float lastBearishPremiumSweepLow=na
+varip float lastBearishPremiumSweepHigh=na
+varip int lastBearishPremiumSweepTime=na
+varip string lastBearishPremiumSweepType=""
+varip float lastBullishDisplacementLow=na
+varip float lastBullishDisplacementHigh=na
+varip int lastBullishDisplacementTime=na
+varip float lastBearishDisplacementLow=na
+varip float lastBearishDisplacementHigh=na
+varip int lastBearishDisplacementTime=na
+varip float lastBullishFvgLow=na
+varip float lastBullishFvgHigh=na
+varip int lastBullishFvgTime=na
+varip float lastBearishFvgLow=na
+varip float lastBearishFvgHigh=na
+varip int lastBearishFvgTime=na
+
+bool freshEntryClose=chartMatchesSelected and not na(entryCandleTime) and (na(lastProcessedEntryTime) or entryCandleTime>lastProcessedEntryTime)
+bool bullishChochEvent=false
+bool bearishChochEvent=false
+bool bullishDisplacementChochEvent=false
+bool bearishDisplacementChochEvent=false
+bool bullishFvgEvent=false
+bool bearishFvgEvent=false
+bool bullishRejectionEvent=false
+bool bearishRejectionEvent=false
+bool bullishSweepReclaimEvent=false
+bool bearishSweepReclaimEvent=false
+bool bullishPremiumLiquidityEvent=false
+bool bearishPremiumLiquidityEvent=false
+
+float entryCandleRange=entryCandleHigh-entryCandleLow
+float entryCandleBody=math.abs(entryCandleClose-entryCandleOpen)
+float entrySafeBody=math.max(entryCandleBody,syminfo.mintick)
+float entryLowerWick=math.min(entryCandleOpen,entryCandleClose)-entryCandleLow
+float entryUpperWick=entryCandleHigh-math.max(entryCandleOpen,entryCandleClose)
+bool bullishBody=entryCandleClose>entryCandleOpen
+bool bearishBody=entryCandleClose<entryCandleOpen
+float entryBodyPct=entryCandleRange>0?entryCandleBody/entryCandleRange:0.0
+float bullishClosePosition=entryCandleRange>0?(entryCandleClose-entryCandleLow)/entryCandleRange:0.0
+float bearishClosePosition=entryCandleRange>0?(entryCandleHigh-entryCandleClose)/entryCandleRange:0.0
+float displacementATR=math.max(nz(confirmedChartATR,syminfo.mintick),syminfo.mintick)
+
+float recentEntryHigh=na
+float recentEntryLow=na
+int structureLookback=math.min(array.size(entryHighs)-1,math.max(entryPivotBars*2+2,sweepLookbackBars))
+
+for i=1 to structureLookback
+    float historicalHigh=array.get(entryHighs,i)
+    float historicalLow=array.get(entryLows,i)
+    recentEntryHigh:=na(recentEntryHigh)?historicalHigh:math.max(recentEntryHigh,historicalHigh)
+    recentEntryLow:=na(recentEntryLow)?historicalLow:math.min(recentEntryLow,historicalLow)
+
+if freshEntryClose
+    // Ordinary CHOCH keeps the proven v4.5.2 fast structure recognition.
+    bool bullishBreak=not na(recentEntryHigh) and entryCandleHigh>recentEntryHigh and entryCandleClose>entryPrevClose
+    bool bearishBreak=not na(recentEntryLow) and entryCandleLow<recentEntryLow and entryCandleClose<entryPrevClose
+
+    bullishChochEvent:=bullishBreak and entryStructureDirection<=0 and (not requireDirectionalBody or bullishBody)
+    bearishChochEvent:=bearishBreak and entryStructureDirection>=0 and (not requireDirectionalBody or bearishBody)
+
+    // Displacement-quality CHOCH requires a completed close beyond structure,
+    // meaningful ATR expansion, a dominant body and a close near the candle extreme.
+    bool bullishDisplacementBreak=not na(recentEntryHigh) and entryCandleClose>=recentEntryHigh+displacementATR*displacementMinBreakATR
+    bool bearishDisplacementBreak=not na(recentEntryLow) and entryCandleClose<=recentEntryLow-displacementATR*displacementMinBreakATR
+    bullishDisplacementChochEvent:=useDisplacementChoch and entryStructureDirection<=0 and bullishBody and entryCandleRange>=displacementATR*displacementMinRangeATR and entryBodyPct>=displacementMinBodyPct and bullishClosePosition>=0.70 and bullishDisplacementBreak
+    bearishDisplacementChochEvent:=useDisplacementChoch and entryStructureDirection>=0 and bearishBody and entryCandleRange>=displacementATR*displacementMinRangeATR and entryBodyPct>=displacementMinBodyPct and bearishClosePosition>=0.70 and bearishDisplacementBreak
+
+    // Fair value gap (3-candle imbalance): the oldest of three consecutive
+    // entry-timeframe candles doesn't overlap the newest at all, leaving an
+    // untraded price gap. A later touch back into that gap is the "fill".
+    bullishFvgEvent:=not na(entryHigh3) and entryHigh3<entryCandleLow
+    bearishFvgEvent:=not na(entryLow3) and entryLow3>entryCandleHigh
+
+    // A rejection only needs a directional body, meaningful wick and a close
+    // back inside the stronger half of the candle.
+    bullishRejectionEvent:=bullishBody and entryLowerWick>=entrySafeBody*rejectionWickRatio and entryCandleClose>=entryCandleLow+entryCandleRange*0.45
+    bearishRejectionEvent:=bearishBody and entryUpperWick>=entrySafeBody*rejectionWickRatio and entryCandleClose<=entryCandleHigh-entryCandleRange*0.45
+
+    // Ordinary completed reclaim of the recent routed-timeframe liquidity pool.
+    bullishSweepReclaimEvent:=useSweepReclaim and not na(recentEntryLow) and entryCandleLow<recentEntryLow and entryCandleClose>recentEntryLow and (not requireDirectionalBody or bullishBody)
+    bearishSweepReclaimEvent:=useSweepReclaim and not na(recentEntryHigh) and entryCandleHigh>recentEntryHigh and entryCandleClose<recentEntryHigh and (not requireDirectionalBody or bearishBody)
+
+    // Premium liquidity levels: previous day, completed Asian session and
+    // completed London session. Reclaim must complete on the selected chart timeframe.
+    bool bullishPreviousDaySweep=useSessionDayLiquidity and not na(previousDayLow) and entryCandleLow<previousDayLow and entryCandleClose>previousDayLow and (not requireDirectionalBody or bullishBody)
+    bool bearishPreviousDaySweep=useSessionDayLiquidity and not na(previousDayHigh) and entryCandleHigh>previousDayHigh and entryCandleClose<previousDayHigh and (not requireDirectionalBody or bearishBody)
+    bool bullishAsiaSweep=useSessionDayLiquidity and asiaLevelFresh and not na(completedAsiaLow) and not na(completedAsiaAt) and entryCandleTime>=completedAsiaAt and entryCandleLow<completedAsiaLow and entryCandleClose>completedAsiaLow and (not requireDirectionalBody or bullishBody)
+    bool bearishAsiaSweep=useSessionDayLiquidity and asiaLevelFresh and not na(completedAsiaHigh) and not na(completedAsiaAt) and entryCandleTime>=completedAsiaAt and entryCandleHigh>completedAsiaHigh and entryCandleClose<completedAsiaHigh and (not requireDirectionalBody or bearishBody)
+    bool bullishLondonSweep=useSessionDayLiquidity and londonLevelFresh and not na(completedLondonLow) and not na(completedLondonAt) and entryCandleTime>=completedLondonAt and entryCandleLow<completedLondonLow and entryCandleClose>completedLondonLow and (not requireDirectionalBody or bullishBody)
+    bool bearishLondonSweep=useSessionDayLiquidity and londonLevelFresh and not na(completedLondonHigh) and not na(completedLondonAt) and entryCandleTime>=completedLondonAt and entryCandleHigh>completedLondonHigh and entryCandleClose<completedLondonHigh and (not requireDirectionalBody or bearishBody)
+
+    bullishPremiumLiquidityEvent:=bullishPreviousDaySweep or bullishAsiaSweep or bullishLondonSweep
+    bearishPremiumLiquidityEvent:=bearishPreviousDaySweep or bearishAsiaSweep or bearishLondonSweep
+
+    if bullishSweepReclaimEvent
+        lastBullishSweepLow:=entryCandleLow
+        lastBullishSweepHigh:=entryCandleHigh
+        lastBullishSweepTime:=entryCandleTime
+
+    if bearishSweepReclaimEvent
+        lastBearishSweepLow:=entryCandleLow
+        lastBearishSweepHigh:=entryCandleHigh
+        lastBearishSweepTime:=entryCandleTime
+
+    if bullishPremiumLiquidityEvent
+        lastBullishPremiumSweepLow:=entryCandleLow
+        lastBullishPremiumSweepHigh:=entryCandleHigh
+        lastBullishPremiumSweepTime:=entryCandleTime
+        lastBullishPremiumSweepType:=bullishPreviousDaySweep?"PREVIOUS-DAY LOW":bullishAsiaSweep?"ASIAN LOW":"LONDON LOW"
+
+    if bearishPremiumLiquidityEvent
+        lastBearishPremiumSweepLow:=entryCandleLow
+        lastBearishPremiumSweepHigh:=entryCandleHigh
+        lastBearishPremiumSweepTime:=entryCandleTime
+        lastBearishPremiumSweepType:=bearishPreviousDaySweep?"PREVIOUS-DAY HIGH":bearishAsiaSweep?"ASIAN HIGH":"LONDON HIGH"
+
+    if bullishDisplacementChochEvent
+        lastBullishDisplacementLow:=entryCandleLow
+        lastBullishDisplacementHigh:=entryCandleHigh
+        lastBullishDisplacementTime:=entryCandleTime
+
+    if bearishDisplacementChochEvent
+        lastBearishDisplacementLow:=entryCandleLow
+        lastBearishDisplacementHigh:=entryCandleHigh
+        lastBearishDisplacementTime:=entryCandleTime
+
+    if bullishFvgEvent
+        lastBullishFvgLow:=entryHigh3
+        lastBullishFvgHigh:=entryCandleLow
+        lastBullishFvgTime:=entryCandleTime
+
+    if bearishFvgEvent
+        lastBearishFvgLow:=entryCandleHigh
+        lastBearishFvgHigh:=entryLow3
+        lastBearishFvgTime:=entryCandleTime
+
+    if bullishBreak
+        entryStructureDirection:=1
+    if bearishBreak
+        entryStructureDirection:=-1
+
+    lastProcessedEntryTime:=entryCandleTime
+
+//--------------------------------------------------------------------------------------------------
+// Signal state machine
+//--------------------------------------------------------------------------------------------------
+// `varip` preserves intrabar changes across realtime ticks.
+// This prevents READY/LIVE states from rolling back and disappearing.
+//
+// Pro V1: READY is no longer a single exclusive slot. BUY and SELL each get
+// their own independent armed slot (armedBuy*/armedSell*) and can be READY
+// at the same time. Only ONE trade can ever be ACTIVE — the active*/result*
+// fields below stay singular exactly as before. A direction cannot start a
+// fresh READY zone while its own trade is the one currently ACTIVE, but the
+// opposite direction keeps arming, resyncing, touching and expiring normally
+// throughout — it simply cannot commit to ACTIVE until liveTradeLocked clears.
+// Touch, latch and commit mechanics are otherwise byte-for-byte v4.7.0,
+// duplicated per side; confluence is calculated the same way but no longer
+// gates arming or the LIVE commit.
+varip string state="MONITORING"
+
+// BUY-HIGH slot (armed on S1)
+varip string armedBuyHighSetupId=""
+varip bool armedBuyHighArmed=false
+varip string armedBuyHighRisk=""
+varip string armedBuyHighConfirmation=""
+varip bool armedBuyHighCounterTrend=false
+varip bool armedBuyHighMtfCluster=false
+varip bool armedBuyHighSweepReclaim=false
+varip bool armedBuyHighPremiumLiquidity=false
+varip bool armedBuyHighDisplacementChoch=false
+varip bool armedBuyHighFvgFill=false
+varip bool armedBuyHighEmaSlope=false
+varip bool armedBuyHighEmaRegime=false
+varip bool armedBuyHighVWAP=false
+varip int armedBuyHighAtBar=na
+varip int armedBuyHighAtClock=na
+varip int armedBuyHighConfluences=0
+varip float armedBuyHighSupportLo=na
+varip float armedBuyHighSupportHi=na
+varip int armedBuyHighZoneRetests=0
+varip bool armedBuyHighZoneExited=false
+varip float armedBuyHighEntryLo=na
+varip float armedBuyHighEntryHi=na
+varip int armedBuyHighEntryTime=na
+varip string armedBuyHighExtraReasons=""
+varip bool armedBuyHighTouchLatched=false
+varip float armedBuyHighTouchPrice=na
+
+// BUY-LOW slot (armed on S2)
+varip string armedBuyLowSetupId=""
+varip bool armedBuyLowArmed=false
+varip string armedBuyLowRisk=""
+varip string armedBuyLowConfirmation=""
+varip bool armedBuyLowCounterTrend=false
+varip bool armedBuyLowMtfCluster=false
+varip bool armedBuyLowSweepReclaim=false
+varip bool armedBuyLowPremiumLiquidity=false
+varip bool armedBuyLowDisplacementChoch=false
+varip bool armedBuyLowFvgFill=false
+varip bool armedBuyLowEmaSlope=false
+varip bool armedBuyLowEmaRegime=false
+varip bool armedBuyLowVWAP=false
+varip int armedBuyLowAtBar=na
+varip int armedBuyLowAtClock=na
+varip int armedBuyLowConfluences=0
+varip float armedBuyLowSupportLo=na
+varip float armedBuyLowSupportHi=na
+varip int armedBuyLowZoneRetests=0
+varip bool armedBuyLowZoneExited=false
+varip float armedBuyLowEntryLo=na
+varip float armedBuyLowEntryHi=na
+varip int armedBuyLowEntryTime=na
+varip string armedBuyLowExtraReasons=""
+varip bool armedBuyLowTouchLatched=false
+varip float armedBuyLowTouchPrice=na
+
+// SELL-HIGH slot (armed on R1)
+varip string armedSellHighSetupId=""
+varip bool armedSellHighArmed=false
+varip string armedSellHighRisk=""
+varip string armedSellHighConfirmation=""
+varip bool armedSellHighCounterTrend=false
+varip bool armedSellHighMtfCluster=false
+varip bool armedSellHighSweepReclaim=false
+varip bool armedSellHighPremiumLiquidity=false
+varip bool armedSellHighDisplacementChoch=false
+varip bool armedSellHighFvgFill=false
+varip bool armedSellHighEmaSlope=false
+varip bool armedSellHighEmaRegime=false
+varip bool armedSellHighVWAP=false
+varip int armedSellHighAtBar=na
+varip int armedSellHighAtClock=na
+varip int armedSellHighConfluences=0
+varip float armedSellHighSupportLo=na
+varip float armedSellHighSupportHi=na
+varip int armedSellHighZoneRetests=0
+varip bool armedSellHighZoneExited=false
+varip float armedSellHighEntryLo=na
+varip float armedSellHighEntryHi=na
+varip int armedSellHighEntryTime=na
+varip string armedSellHighExtraReasons=""
+varip bool armedSellHighTouchLatched=false
+varip float armedSellHighTouchPrice=na
+
+// SELL-LOW slot (armed on R2)
+varip string armedSellLowSetupId=""
+varip bool armedSellLowArmed=false
+varip string armedSellLowRisk=""
+varip string armedSellLowConfirmation=""
+varip bool armedSellLowCounterTrend=false
+varip bool armedSellLowMtfCluster=false
+varip bool armedSellLowSweepReclaim=false
+varip bool armedSellLowPremiumLiquidity=false
+varip bool armedSellLowDisplacementChoch=false
+varip bool armedSellLowFvgFill=false
+varip bool armedSellLowEmaSlope=false
+varip bool armedSellLowEmaRegime=false
+varip bool armedSellLowVWAP=false
+varip int armedSellLowAtBar=na
+varip int armedSellLowAtClock=na
+varip int armedSellLowConfluences=0
+varip float armedSellLowSupportLo=na
+varip float armedSellLowSupportHi=na
+varip int armedSellLowZoneRetests=0
+varip bool armedSellLowZoneExited=false
+varip float armedSellLowEntryLo=na
+varip float armedSellLowEntryHi=na
+varip int armedSellLowEntryTime=na
+varip string armedSellLowExtraReasons=""
+varip bool armedSellLowTouchLatched=false
+varip float armedSellLowTouchPrice=na
+
+// Immutable LIVE trade snapshot. These fields are written once when LIVE starts
+// and cannot be changed by later direction/support/entry candle closes.
+varip bool liveTradeLocked=false
+varip string activeSetupId=""
+varip string activeDirection="NONE"
+varip string activeRisk=""
+varip string activeConfirmation=""
+varip string activeExtraReasons=""
+varip bool activeCounterTrend=false
+varip int activeConfluences=0
+varip float activeEntry=na
+varip float activeSL=na
+varip float activeTP=na
+varip float activeExit=na
+varip float activeResultPips=na
+varip float activeRR=na
+varip float activeMarkerPrice=na
+varip int activeStartBar=na
+varip int activeStartTime=na
+varip bool activeBreakEvenArmed=false
+varip float activeBreakEvenTriggerPips=na
+varip float activeBreakEvenTriggerPrice=na
+varip float activeTrailSL=na
+varip int resultStartedAt=na
+varip int resultHideAt=na
+
+// Event-alert deduplication. alert.freq_all is safe because each immutable
+// setup/state key is allowed to emit only once. This prevents LIVE/result
+// events in the same chart bar from suppressing one another.
+varip string lastLiveAlertKey=""
+varip string lastResultAlertKey=""
+
+// Independent TP/SL/BE card snapshot. Once a result is detected, every value shown
+// on the card is frozen for the full 10-second display window.
+varip string resultCardStatus="NONE"
+varip string resultCardSetupId=""
+varip string resultCardDirection="NONE"
+varip string resultCardRisk=""
+varip string resultCardConfirmation=""
+varip string resultCardExtraReasons=""
+varip int resultCardConfluences=0
+varip float resultCardEntry=na
+varip float resultCardSL=na
+varip float resultCardTP=na
+varip float resultCardExit=na
+varip float resultCardPips=na
+
+// Permanent marker ledger. Historical reconstruction and alert-synced realtime
+// events share one capped collection, but their tooltips identify the source.
+// Labels are created once at commitment and remain until they become older than
+// the newest 33 signals. This avoids delete/rebuild flicker on every live tick.
+var array<string> permanentMarkerSetupIds=array.new_string()
+var array<label> permanentMarkerLabels=array.new_label()
+
+// LOW RISK zones stay drawing-only for the map (S2/R2 boxes always drawn),
+// but Pro V1 uses the LOW RISK zone as the live counter-trend arming zone.
+var label currentLiveSignalMarker=na
+
+bool armedBuyHighEvent=false
+bool armedBuyLowEvent=false
+bool armedSellHighEvent=false
+bool armedSellLowEvent=false
+bool liveEvent=false
+bool realtimeLiveEvent=false
+bool tpEvent=false
+bool slEvent=false
+bool beEvent=false
+
+// READY requires a recent entry-zone rejection or completed sweep/reclaim.
+// The confirmation remains valid for the current candle plus the next
+// four routed entry-timeframe candles to increase nearby valid setups.
+const int ARMED_CONFIRMATION_WINDOW=4
+int bullishChochAge=ta.barssince(bullishChochEvent)
+int bearishChochAge=ta.barssince(bearishChochEvent)
+int bullishRejectionAge=ta.barssince(bullishRejectionEvent)
+int bearishRejectionAge=ta.barssince(bearishRejectionEvent)
+int bullishSweepAge=ta.barssince(bullishSweepReclaimEvent)
+int bearishSweepAge=ta.barssince(bearishSweepReclaimEvent)
+int bullishPremiumSweepAge=ta.barssince(bullishPremiumLiquidityEvent)
+int bearishPremiumSweepAge=ta.barssince(bearishPremiumLiquidityEvent)
+int bullishDisplacementAge=ta.barssince(bullishDisplacementChochEvent)
+int bearishDisplacementAge=ta.barssince(bearishDisplacementChochEvent)
+int bullishFvgAge=ta.barssince(bullishFvgEvent)
+int bearishFvgAge=ta.barssince(bearishFvgEvent)
+
+bool bullishRecentChoch=not na(bullishChochAge) and bullishChochAge<=ARMED_CONFIRMATION_WINDOW
+bool bearishRecentChoch=not na(bearishChochAge) and bearishChochAge<=ARMED_CONFIRMATION_WINDOW
+bool bullishRecentRejection=not na(bullishRejectionAge) and bullishRejectionAge<=ARMED_CONFIRMATION_WINDOW
+bool bearishRecentRejection=not na(bearishRejectionAge) and bearishRejectionAge<=ARMED_CONFIRMATION_WINDOW
+bool bullishRecentSweep=not na(bullishSweepAge) and bullishSweepAge<=ARMED_CONFIRMATION_WINDOW
+bool bearishRecentSweep=not na(bearishSweepAge) and bearishSweepAge<=ARMED_CONFIRMATION_WINDOW
+bool bullishRecentPremiumSweep=not na(bullishPremiumSweepAge) and bullishPremiumSweepAge<=ARMED_CONFIRMATION_WINDOW
+bool bearishRecentPremiumSweep=not na(bearishPremiumSweepAge) and bearishPremiumSweepAge<=ARMED_CONFIRMATION_WINDOW
+bool bullishRecentDisplacement=not na(bullishDisplacementAge) and bullishDisplacementAge<=ARMED_CONFIRMATION_WINDOW
+bool bearishRecentDisplacement=not na(bearishDisplacementAge) and bearishDisplacementAge<=ARMED_CONFIRMATION_WINDOW
+bool bullishRecentFvg=not na(bullishFvgAge) and bullishFvgAge<=ARMED_CONFIRMATION_WINDOW
+bool bearishRecentFvg=not na(bearishFvgAge) and bearishFvgAge<=ARMED_CONFIRMATION_WINDOW
+
+// Every reversal event must remain spatially connected to the specific zone
+// being evaluated — each of the four zones now checks independently.
+bool bullishSweepInBuyHighZone=bullishRecentSweep and not na(lastBullishSweepTime) and f_overlap(lastBullishSweepLow,lastBullishSweepHigh,buyHighLo,buyHighHi)
+bool bullishSweepInBuyLowZone=bullishRecentSweep and not na(lastBullishSweepTime) and f_overlap(lastBullishSweepLow,lastBullishSweepHigh,buyLowLo,buyLowHi)
+bool bearishSweepInSellHighZone=bearishRecentSweep and not na(lastBearishSweepTime) and f_overlap(lastBearishSweepLow,lastBearishSweepHigh,sellHighLo,sellHighHi)
+bool bearishSweepInSellLowZone=bearishRecentSweep and not na(lastBearishSweepTime) and f_overlap(lastBearishSweepLow,lastBearishSweepHigh,sellLowLo,sellLowHi)
+bool bullishPremiumSweepInBuyHighZone=bullishRecentPremiumSweep and not na(lastBullishPremiumSweepTime) and f_overlap(lastBullishPremiumSweepLow,lastBullishPremiumSweepHigh,buyHighLo,buyHighHi)
+bool bullishPremiumSweepInBuyLowZone=bullishRecentPremiumSweep and not na(lastBullishPremiumSweepTime) and f_overlap(lastBullishPremiumSweepLow,lastBullishPremiumSweepHigh,buyLowLo,buyLowHi)
+bool bearishPremiumSweepInSellHighZone=bearishRecentPremiumSweep and not na(lastBearishPremiumSweepTime) and f_overlap(lastBearishPremiumSweepLow,lastBearishPremiumSweepHigh,sellHighLo,sellHighHi)
+bool bearishPremiumSweepInSellLowZone=bearishRecentPremiumSweep and not na(lastBearishPremiumSweepTime) and f_overlap(lastBearishPremiumSweepLow,lastBearishPremiumSweepHigh,sellLowLo,sellLowHi)
+bool bullishDisplacementInBuyHighZone=bullishRecentDisplacement and not na(lastBullishDisplacementTime) and f_overlap(lastBullishDisplacementLow,lastBullishDisplacementHigh,buyHighLo,buyHighHi)
+bool bullishDisplacementInBuyLowZone=bullishRecentDisplacement and not na(lastBullishDisplacementTime) and f_overlap(lastBullishDisplacementLow,lastBullishDisplacementHigh,buyLowLo,buyLowHi)
+bool bearishDisplacementInSellHighZone=bearishRecentDisplacement and not na(lastBearishDisplacementTime) and f_overlap(lastBearishDisplacementLow,lastBearishDisplacementHigh,sellHighLo,sellHighHi)
+bool bearishDisplacementInSellLowZone=bearishRecentDisplacement and not na(lastBearishDisplacementTime) and f_overlap(lastBearishDisplacementLow,lastBearishDisplacementHigh,sellLowLo,sellLowHi)
+bool bullishFvgInBuyHighZone=bullishRecentFvg and not na(lastBullishFvgTime) and f_overlap(lastBullishFvgLow,lastBullishFvgHigh,buyHighLo,buyHighHi)
+bool bullishFvgInBuyLowZone=bullishRecentFvg and not na(lastBullishFvgTime) and f_overlap(lastBullishFvgLow,lastBullishFvgHigh,buyLowLo,buyLowHi)
+bool bearishFvgInSellHighZone=bearishRecentFvg and not na(lastBearishFvgTime) and f_overlap(lastBearishFvgLow,lastBearishFvgHigh,sellHighLo,sellHighHi)
+bool bearishFvgInSellLowZone=bearishRecentFvg and not na(lastBearishFvgTime) and f_overlap(lastBearishFvgLow,lastBearishFvgHigh,sellLowLo,sellLowHi)
+bool bullishAnySweepInBuyHighZone=bullishSweepInBuyHighZone or bullishPremiumSweepInBuyHighZone
+bool bullishAnySweepInBuyLowZone=bullishSweepInBuyLowZone or bullishPremiumSweepInBuyLowZone
+bool bearishAnySweepInSellHighZone=bearishSweepInSellHighZone or bearishPremiumSweepInSellHighZone
+bool bearishAnySweepInSellLowZone=bearishSweepInSellLowZone or bearishPremiumSweepInSellLowZone
+
+// Rejection keeps the original frequency. Premium sweep-reclaim, displacement
+// CHOCH and a plain structure-break CHOCH are all valid, independent
+// confirmation paths instead of acting as hard filters. CHOCH itself is not
+// zone-specific (a structure break isn't anchored to one S/R level), so it
+// applies identically to whichever zone is being evaluated.
+bool bullishArmedConfirmationHigh=bullishRecentRejection or bullishAnySweepInBuyHighZone or bullishDisplacementInBuyHighZone or bullishFvgInBuyHighZone or bullishRecentChoch
+bool bullishArmedConfirmationLow=bullishRecentRejection or bullishAnySweepInBuyLowZone or bullishDisplacementInBuyLowZone or bullishFvgInBuyLowZone or bullishRecentChoch
+bool bearishArmedConfirmationHigh=bearishRecentRejection or bearishAnySweepInSellHighZone or bearishDisplacementInSellHighZone or bearishFvgInSellHighZone or bearishRecentChoch
+bool bearishArmedConfirmationLow=bearishRecentRejection or bearishAnySweepInSellLowZone or bearishDisplacementInSellLowZone or bearishFvgInSellLowZone or bearishRecentChoch
+
+string bullishConfirmationNameHigh=bullishPremiumSweepInBuyHighZone?"SESSION / PREVIOUS-DAY SWEEP + RECLAIM":bullishSweepInBuyHighZone?"LIQUIDITY SWEEP + RECLAIM":bullishDisplacementInBuyHighZone?"DISPLACEMENT CHOCH":bullishFvgInBuyHighZone?"FAIR VALUE GAP FILL":bullishRecentRejection?"ENTRY ZONE REJECTION":bullishRecentChoch?"STRUCTURE BREAK (CHOCH)":""
+string bullishConfirmationNameLow=bullishPremiumSweepInBuyLowZone?"SESSION / PREVIOUS-DAY SWEEP + RECLAIM":bullishSweepInBuyLowZone?"LIQUIDITY SWEEP + RECLAIM":bullishDisplacementInBuyLowZone?"DISPLACEMENT CHOCH":bullishFvgInBuyLowZone?"FAIR VALUE GAP FILL":bullishRecentRejection?"ENTRY ZONE REJECTION":bullishRecentChoch?"STRUCTURE BREAK (CHOCH)":""
+string bearishConfirmationNameHigh=bearishPremiumSweepInSellHighZone?"SESSION / PREVIOUS-DAY SWEEP + RECLAIM":bearishSweepInSellHighZone?"LIQUIDITY SWEEP + RECLAIM":bearishDisplacementInSellHighZone?"DISPLACEMENT CHOCH":bearishFvgInSellHighZone?"FAIR VALUE GAP FILL":bearishRecentRejection?"ENTRY ZONE REJECTION":bearishRecentChoch?"STRUCTURE BREAK (CHOCH)":""
+string bearishConfirmationNameLow=bearishPremiumSweepInSellLowZone?"SESSION / PREVIOUS-DAY SWEEP + RECLAIM":bearishSweepInSellLowZone?"LIQUIDITY SWEEP + RECLAIM":bearishDisplacementInSellLowZone?"DISPLACEMENT CHOCH":bearishFvgInSellLowZone?"FAIR VALUE GAP FILL":bearishRecentRejection?"ENTRY ZONE REJECTION":bearishRecentChoch?"STRUCTURE BREAK (CHOCH)":""
+
+// Confluence is still calculated exactly as before (base level + BRN/EMA/
+// trend/fib/MTF/sweep/displacement/EMA-regime/EMA-slope/VWAP evidence),
+// now per zone. Pro V1 no longer gates arming or LIVE release on it by
+// default — it only feeds the trade-card CONFIDENCE label further below
+// (unless Minimum Confluence for LIVE Trigger is raised above 0).
+int buyHighConfluences=f_confluence_count(buyHighLo,buyHighHi,S1,supportEMA,supportTrendSupport,buyFib50,buyFib618,brnStep,microBrnStep,confluenceTolerance,buyHighMtfCluster,bullishSweepInBuyHighZone,bullishPremiumSweepInBuyHighZone,bullishDisplacementInBuyHighZone,buyEmaSlopeConfluence,buyEmaRegimeConfluence,buyHighVWAPConfluence,bullishFvgInBuyHighZone)
+int buyLowConfluences=f_confluence_count(buyLowLo,buyLowHi,S2,supportEMA,supportTrendSupport,buyFib50,buyFib618,brnStep,microBrnStep,confluenceTolerance,buyLowMtfCluster,bullishSweepInBuyLowZone,bullishPremiumSweepInBuyLowZone,bullishDisplacementInBuyLowZone,buyEmaSlopeConfluence,buyEmaRegimeConfluence,buyLowVWAPConfluence,bullishFvgInBuyLowZone)
+int sellHighConfluences=f_confluence_count(sellHighLo,sellHighHi,R1,supportEMA,supportTrendResistance,sellFib50,sellFib618,brnStep,microBrnStep,confluenceTolerance,sellHighMtfCluster,bearishSweepInSellHighZone,bearishPremiumSweepInSellHighZone,bearishDisplacementInSellHighZone,sellEmaSlopeConfluence,sellEmaRegimeConfluence,sellHighVWAPConfluence,bearishFvgInSellHighZone)
+int sellLowConfluences=f_confluence_count(sellLowLo,sellLowHi,R2,supportEMA,supportTrendResistance,sellFib50,sellFib618,brnStep,microBrnStep,confluenceTolerance,sellLowMtfCluster,bearishSweepInSellLowZone,bearishPremiumSweepInSellLowZone,bearishDisplacementInSellLowZone,sellEmaSlopeConfluence,sellEmaRegimeConfluence,sellLowVWAPConfluence,bearishFvgInSellLowZone)
+
+// READY entry rectangles stay entirely below CMP for BUY and above CMP for SELL.
+float readySideBuffer=syminfo.mintick
+
+//--------------------------------------------------------------------------------------------------
+// BUY-HIGH slot — arm on S1, resync, invalidate, touch, plan, release
+//--------------------------------------------------------------------------------------------------
+// A direction cannot start a fresh READY zone while its own trade is the one
+// currently ACTIVE. The opposite direction is never gated here.
+bool buyHighArmEligible=freshEntryClose and not armedBuyHighArmed and not (liveTradeLocked and activeDirection=="BUY")
+
+if buyHighArmEligible
+    int buyHighRetests=f_zone_retest_count(buyHighLo,buyHighHi,buyHighTime,entryCandleTime,supportSeconds,entryHighs,entryLows,entryTimes)
+    bool buyHighRetestValid=buyHighRetests<=MAXIMUM_ZONE_RETESTS
+    // Counter-trend and trend-following routes share the same confirmation
+    // bar now — no extra reversal-quality gate. Confluence count is no
+    // longer required either; it only feeds the confidence label.
+    bool buyHighConfirmationValid=allowBuy and bullishArmedConfirmationHigh
+    // The entry rectangle is the drawn zone itself now, not a single
+    // candle picked from inside it — this removes the biggest frequency
+    // bottleneck (waiting for one qualifying candle to exist in the zone).
+    // The zone must still sit fully below CMP so READY never arms on a
+    // level price has already blown through.
+    float buyHighEntryLo=buyHighLo
+    float buyHighEntryHi=buyHighHi
+    int buyHighEntryTime=buyHighTime
+    bool buyHighZoneCorrectSide=not na(buyHighEntryHi) and buyHighEntryHi<close-readySideBuffer
+    bool buyHighCandidate=buyHighConfirmationValid and not na(buyHighEntryLo) and not na(buyHighEntryHi) and buyHighEntryHi>buyHighEntryLo and buyHighZoneCorrectSide and buyHighRetestValid and buyHighConfluences>=minimumConfluenceForLive
+
+    if buyHighCandidate
+        armedBuyHighArmed:=true
+        armedBuyHighRisk:="HIGH RISK"
+        armedBuyHighConfirmation:=bullishConfirmationNameHigh
+        armedBuyHighCounterTrend:=buyIsCounterTrend
+        armedBuyHighMtfCluster:=buyHighMtfCluster
+        armedBuyHighSweepReclaim:=bullishAnySweepInBuyHighZone
+        armedBuyHighPremiumLiquidity:=bullishPremiumSweepInBuyHighZone
+        armedBuyHighDisplacementChoch:=bullishDisplacementInBuyHighZone
+        armedBuyHighFvgFill:=bullishFvgInBuyHighZone
+        armedBuyHighEmaSlope:=buyEmaSlopeConfluence
+        armedBuyHighEmaRegime:=buyEmaRegimeConfluence
+        armedBuyHighVWAP:=buyHighVWAPConfluence
+        armedBuyHighAtBar:=bar_index
+        armedBuyHighConfluences:=buyHighConfluences
+        armedBuyHighSupportLo:=buyHighLo
+        armedBuyHighSupportHi:=buyHighHi
+        armedBuyHighZoneRetests:=buyHighRetests
+        armedBuyHighZoneExited:=false
+        armedBuyHighEntryLo:=buyHighEntryLo
+        armedBuyHighEntryHi:=buyHighEntryHi
+        armedBuyHighEntryTime:=buyHighEntryTime
+        armedBuyHighAtClock:=barstate.isrealtime?timenow:time_close
+        armedBuyHighSetupId:="BUY-"+str.tostring(buyHighEntryTime)+"-"+str.tostring(bar_index)
+        armedBuyHighTouchLatched:=false
+        armedBuyHighTouchPrice:=na
+        armedBuyHighEvent:=true
+
+// The supporting map can recalculate while READY is waiting, and the bias can
+// flip which zone (HIGH vs LOW RISK) this direction should be using. Resync
+// keeps the armed rectangle anchored to whatever is currently the correct zone.
+bool buyHighZoneChanged=armedBuyHighArmed and (na(armedBuyHighSupportLo) or na(armedBuyHighSupportHi) or math.abs(buyHighLo-armedBuyHighSupportLo)>syminfo.mintick or math.abs(buyHighHi-armedBuyHighSupportHi)>syminfo.mintick)
+
+if buyHighZoneChanged
+    float syncedBuyHighEntryLo=buyHighLo
+    float syncedBuyHighEntryHi=buyHighHi
+    int syncedBuyHighEntryTime=buyHighTime
+    bool syncedBuyHighZoneCorrectSide=not na(syncedBuyHighEntryHi) and syncedBuyHighEntryHi<close-readySideBuffer
+    int syncedBuyHighRetests=f_zone_retest_count(buyHighLo,buyHighHi,buyHighTime,entryCandleTime,supportSeconds,entryHighs,entryLows,entryTimes)
+    bool syncedBuyHighCandidateValid=not na(syncedBuyHighEntryLo) and not na(syncedBuyHighEntryHi) and syncedBuyHighEntryHi>syncedBuyHighEntryLo and syncedBuyHighZoneCorrectSide and allowBuy and bullishArmedConfirmationHigh and syncedBuyHighRetests<=MAXIMUM_ZONE_RETESTS and buyHighConfluences>=minimumConfluenceForLive
+
+    if syncedBuyHighCandidateValid
+        armedBuyHighSupportLo:=buyHighLo
+        armedBuyHighSupportHi:=buyHighHi
+        armedBuyHighEntryLo:=syncedBuyHighEntryLo
+        armedBuyHighEntryHi:=syncedBuyHighEntryHi
+        armedBuyHighEntryTime:=syncedBuyHighEntryTime
+        armedBuyHighConfluences:=buyHighConfluences
+        armedBuyHighMtfCluster:=buyHighMtfCluster
+        armedBuyHighSweepReclaim:=bullishAnySweepInBuyHighZone
+        armedBuyHighPremiumLiquidity:=bullishPremiumSweepInBuyHighZone
+        armedBuyHighDisplacementChoch:=bullishDisplacementInBuyHighZone
+        armedBuyHighFvgFill:=bullishFvgInBuyHighZone
+        armedBuyHighEmaSlope:=buyEmaSlopeConfluence
+        armedBuyHighEmaRegime:=buyEmaRegimeConfluence
+        armedBuyHighVWAP:=buyHighVWAPConfluence
+        armedBuyHighZoneRetests:=syncedBuyHighRetests
+        armedBuyHighZoneExited:=false
+        armedBuyHighRisk:="HIGH RISK"
+        armedBuyHighConfirmation:=bullishConfirmationNameHigh
+        armedBuyHighCounterTrend:=buyIsCounterTrend
+        // Keep the original READY candle for LIVE eligibility.
+        // Only the entry rectangle/map data is synchronized here.
+        armedBuyHighAtClock:=barstate.isrealtime?timenow:time_close
+        armedBuyHighSetupId:="BUY-"+str.tostring(syncedBuyHighEntryTime)+"-"+str.tostring(bar_index)
+        armedBuyHighTouchLatched:=false
+        armedBuyHighTouchPrice:=na
+        armedBuyHighEvent:=true
+    else
+        // No valid full candle exists inside the currently drawn risk box.
+        // Remove the stale READY signal and wait for a fresh valid setup.
+        armedBuyHighArmed:=false
+        armedBuyHighSetupId:=""
+        armedBuyHighRisk:=""
+        armedBuyHighConfirmation:=""
+        armedBuyHighExtraReasons:=""
+        armedBuyHighCounterTrend:=false
+        armedBuyHighMtfCluster:=false
+        armedBuyHighSweepReclaim:=false
+        armedBuyHighPremiumLiquidity:=false
+        armedBuyHighDisplacementChoch:=false
+        armedBuyHighFvgFill:=false
+        armedBuyHighEmaSlope:=false
+        armedBuyHighEmaRegime:=false
+        armedBuyHighVWAP:=false
+        armedBuyHighAtBar:=na
+        armedBuyHighAtClock:=na
+        armedBuyHighZoneRetests:=0
+        armedBuyHighZoneExited:=false
+        armedBuyHighEntryLo:=na
+        armedBuyHighEntryHi:=na
+        armedBuyHighEntryTime:=na
+        armedBuyHighTouchLatched:=false
+        armedBuyHighTouchPrice:=na
+
+if armedBuyHighEvent
+    float armedBuyHighMid=(armedBuyHighSupportLo+armedBuyHighSupportHi)/2.0
+    bool buyHighReasonBRN=f_near_round(armedBuyHighMid,brnStep,confluenceTolerance)
+    bool buyHighReasonMicro=not buyHighReasonBRN and f_near_round(armedBuyHighMid,microBrnStep,confluenceTolerance)
+    bool buyHighReasonEMA=f_near(armedBuyHighMid,supportEMA,confluenceTolerance)
+    bool buyHighReasonTrend=f_near(armedBuyHighMid,supportTrendSupport,confluenceTolerance)
+    bool buyHighReasonFib=f_near(armedBuyHighMid,buyFib50,confluenceTolerance) or f_near(armedBuyHighMid,buyFib618,confluenceTolerance)
+
+    armedBuyHighExtraReasons:=""
+    bool buyHighReasonCHOCH=bullishRecentChoch and not armedBuyHighDisplacementChoch and not armedBuyHighFvgFill
+    if buyHighReasonCHOCH
+        armedBuyHighExtraReasons:=armedBuyHighExtraReasons+"\nCHOCH"
+    if armedBuyHighMtfCluster
+        armedBuyHighExtraReasons:=armedBuyHighExtraReasons+"\nMTF LEVEL CLUSTER"
+    if armedBuyHighPremiumLiquidity
+        armedBuyHighExtraReasons:=armedBuyHighExtraReasons+"\n"+lastBullishPremiumSweepType+" SWEEP + RECLAIM"
+    else if armedBuyHighSweepReclaim
+        armedBuyHighExtraReasons:=armedBuyHighExtraReasons+"\nLIQUIDITY SWEEP + RECLAIM"
+    if armedBuyHighDisplacementChoch
+        armedBuyHighExtraReasons:=armedBuyHighExtraReasons+"\nDISPLACEMENT CHOCH"
+    if armedBuyHighFvgFill
+        armedBuyHighExtraReasons:=armedBuyHighExtraReasons+"\nFAIR VALUE GAP FILL"
+    if armedBuyHighEmaSlope
+        armedBuyHighExtraReasons:=armedBuyHighExtraReasons+"\nEMA13 SLOPE"
+    if armedBuyHighEmaRegime
+        armedBuyHighExtraReasons:=armedBuyHighExtraReasons+"\nEMA13 / EMA50 REGIME"
+    if armedBuyHighVWAP
+        armedBuyHighExtraReasons:=armedBuyHighExtraReasons+"\nDAILY VWAP"
+    if buyHighReasonBRN
+        armedBuyHighExtraReasons:=armedBuyHighExtraReasons+"\nBRN CONFLUENCE"
+    if buyHighReasonMicro
+        armedBuyHighExtraReasons:=armedBuyHighExtraReasons+"\nMICRO BRN CONFLUENCE"
+    if buyHighReasonEMA
+        armedBuyHighExtraReasons:=armedBuyHighExtraReasons+"\nEMA REJECTION"
+    if buyHighReasonTrend
+        armedBuyHighExtraReasons:=armedBuyHighExtraReasons+"\nTRENDLINE CONFLUENCE"
+    if buyHighReasonFib
+        armedBuyHighExtraReasons:=armedBuyHighExtraReasons+"\nFIBONACCI CONFLUENCE"
+
+float invalidationBuffer=math.max(pipSize*5.0,syminfo.mintick*2.0)
+int armedClock=barstate.isrealtime?timenow:time_close
+bool buyHighExpired=armedBuyHighArmed and not na(armedBuyHighAtClock) and armedClock-armedBuyHighAtClock>armedExpiryEntryBars*entrySeconds*1000.0
+// Counter-trend READY setups are frozen: once armed as counter-trend, only
+// the zone, expiry and retest rules manage them (unchanged from v4.7.0). A
+// trend-armed setup still invalidates if the trend route breaks.
+bool buyHighTrendRouteInvalid=armedBuyHighArmed and not armedBuyHighCounterTrend and not trendBuyRoute
+bool buyHighBiasInvalid=buyHighTrendRouteInvalid
+bool buyHighZoneInvalid=armedBuyHighArmed and close<armedBuyHighSupportLo-invalidationBuffer
+
+bool buyHighSupportTouched=armedBuyHighArmed and f_overlap(low,high,armedBuyHighSupportLo,armedBuyHighSupportHi)
+if armedBuyHighArmed and not buyHighSupportTouched
+    armedBuyHighZoneExited:=true
+bool buyHighRetestLimitInvalid=armedBuyHighArmed and armedBuyHighZoneExited and buyHighSupportTouched and armedBuyHighZoneRetests>=MAXIMUM_ZONE_RETESTS
+
+// READY must remain pending on the correct side of CMP.
+// A genuine touch has priority and must transition to LIVE instead of being invalidated.
+bool armedBuyHighEntryTouchedNow=armedBuyHighArmed and f_overlap(low,high,armedBuyHighEntryLo,armedBuyHighEntryHi)
+bool buyHighEntrySideInvalid=armedBuyHighArmed and not armedBuyHighEntryTouchedNow and armedBuyHighEntryHi>=close-readySideBuffer
+
+// READY rectangle must remain completely inside the exact risk box
+// currently drawn on the chart, not only the zone frozen at initial arming.
+bool buyHighEntryOutsideVisibleRiskZone=armedBuyHighArmed and (na(buyHighLo) or na(buyHighHi) or na(armedBuyHighEntryLo) or na(armedBuyHighEntryHi) or armedBuyHighEntryLo<buyHighLo-syminfo.mintick or armedBuyHighEntryHi>buyHighHi+syminfo.mintick)
+
+// LIVE starts only from a completely later chart candle.
+// The original READY candle is preserved even when the visible map synchronizes.
+// Any later candle that actually overlaps the current frozen entry rectangle can trigger LIVE.
+bool buyHighTouchAfterArming=armedBuyHighArmed and not na(armedBuyHighAtBar) and bar_index>armedBuyHighAtBar
+bool buyHighFirstTouchNow=buyHighTouchAfterArming and armedBuyHighEntryTouchedNow and not armedBuyHighTouchLatched
+
+if buyHighFirstTouchNow
+    armedBuyHighTouchLatched:=true
+    armedBuyHighTouchPrice:=f_touch_entry(armedBuyHighEntryLo,armedBuyHighEntryHi,close[1],open,close)
+
+// Before the first touch, normal READY invalidation still applies.
+// Once touched, the latched event has priority and cannot be erased by a later tick.
+bool buyHighReadyInvalidBeforeTouch=buyHighExpired or buyHighBiasInvalid or buyHighZoneInvalid or buyHighRetestLimitInvalid or buyHighEntrySideInvalid or buyHighEntryOutsideVisibleRiskZone
+if armedBuyHighArmed and not armedBuyHighTouchLatched and (buyHighReadyInvalidBeforeTouch or not chartMatchesSelected)
+    armedBuyHighArmed:=false
+    armedBuyHighSetupId:=""
+    armedBuyHighRisk:=""
+    armedBuyHighConfirmation:=""
+    armedBuyHighExtraReasons:=""
+    armedBuyHighCounterTrend:=false
+    armedBuyHighMtfCluster:=false
+    armedBuyHighSweepReclaim:=false
+    armedBuyHighPremiumLiquidity:=false
+    armedBuyHighDisplacementChoch:=false
+    armedBuyHighFvgFill:=false
+    armedBuyHighEmaSlope:=false
+    armedBuyHighEmaRegime:=false
+    armedBuyHighVWAP:=false
+    armedBuyHighAtClock:=na
+    armedBuyHighZoneRetests:=0
+    armedBuyHighZoneExited:=false
+    armedBuyHighEntryLo:=na
+    armedBuyHighEntryHi:=na
+    armedBuyHighTouchLatched:=false
+    armedBuyHighTouchPrice:=na
+
+bool buyHighEntryTouched=armedBuyHighArmed and armedBuyHighTouchLatched
+
+// Entry price is frozen at the first actual touch and cannot move or disappear.
+float buyHighPlannedEntry=buyHighEntryTouched?armedBuyHighTouchPrice:na
+float buyHighPlannedSL=na
+float buyHighPlannedTP=na
+float buyHighPlannedRR=na
+float snrBuffer=snrFrontRunPips*pipSize
+float volatilityStopDistance=math.max(stopBufferPips*pipSize,nz(chartATR,targetMinimumDistance)*stopATRMultiplier)
+float volatilityTargetDistance=nz(chartATR,targetMinimumDistance)*targetATRMultiplier
+
+if buyHighEntryTouched and chartMatchesSelected
+    float buyHighBaseSL=math.round_to_mintick(armedBuyHighEntryLo-volatilityStopDistance)
+    float buyHighFreshSupport=f_nearest_below4(armedBuyHighEntryLo-snrBuffer,S1,S2,supportSwingLow,supportTrendSupport)
+    float buyHighProtectedSL=not na(buyHighFreshSupport)?math.round_to_mintick(buyHighFreshSupport+snrBuffer):buyHighBaseSL
+    buyHighPlannedSL:=math.max(buyHighBaseSL,buyHighProtectedSL)
+
+    if buyHighPlannedSL<buyHighPlannedEntry
+        float buyHighRiskDistance=buyHighPlannedEntry-buyHighPlannedSL
+        float buyHighDesiredReward=f_clamp(math.max(volatilityTargetDistance,buyHighRiskDistance*1.5),targetMinimumDistance,targetMaximumDistance)
+        buyHighDesiredReward:=math.min(buyHighDesiredReward,buyHighRiskDistance*maximumRR)
+        float buyHighFreshResistance=f_nearest_above4(buyHighPlannedEntry,R1,R2,supportSwingHigh,supportTrendResistance)
+        float buyHighAvailableReward=not na(buyHighFreshResistance)?buyHighFreshResistance-snrBuffer-buyHighPlannedEntry:buyHighDesiredReward
+        float buyHighRewardDistance=math.min(buyHighDesiredReward,buyHighAvailableReward)
+        buyHighPlannedTP:=buyHighRewardDistance>=buyHighRiskDistance*minimumRR?math.round_to_mintick(buyHighPlannedEntry+buyHighRewardDistance):na
+        buyHighPlannedRR:=not na(buyHighPlannedTP)?(buyHighPlannedTP-buyHighPlannedEntry)/buyHighRiskDistance:na
+
+// A touched READY setup must always be released as LIVE.
+// When the structure-based TP/SL plan is unavailable, build a bounded
+// ATR/risk fallback instead of dropping the touch event.
+bool buyHighPrimaryPlanValid=buyHighEntryTouched and not na(buyHighPlannedEntry) and not na(buyHighPlannedSL) and not na(buyHighPlannedTP) and not na(buyHighPlannedRR) and buyHighPlannedRR>=minimumRR and buyHighPlannedRR<=maximumRR+0.0001
+
+if buyHighEntryTouched and not buyHighPrimaryPlanValid and not na(buyHighPlannedEntry)
+    float buyHighFallbackRisk=math.max(volatilityStopDistance,targetMinimumDistance/maximumRR)
+    float buyHighFallbackRewardFloor=buyHighFallbackRisk*minimumRR
+    float buyHighFallbackRewardCeiling=math.max(buyHighFallbackRewardFloor,math.min(targetMaximumDistance,buyHighFallbackRisk*maximumRR))
+    float buyHighFallbackReward=f_clamp(math.max(volatilityTargetDistance,targetMinimumDistance),buyHighFallbackRewardFloor,buyHighFallbackRewardCeiling)
+    buyHighPlannedSL:=math.round_to_mintick(buyHighPlannedEntry-buyHighFallbackRisk)
+    buyHighPlannedTP:=math.round_to_mintick(buyHighPlannedEntry+buyHighFallbackReward)
+    buyHighPlannedRR:=buyHighFallbackReward/buyHighFallbackRisk
+
+bool buyHighValidPlan=buyHighEntryTouched and armedBuyHighConfluences>=minimumConfluenceForLive and not na(buyHighPlannedEntry) and not na(buyHighPlannedSL) and not na(buyHighPlannedTP) and not na(buyHighPlannedRR) and buyHighPlannedRR>=minimumRR and buyHighPlannedRR<=maximumRR+0.0001
+
+// Commit LIVE the instant the touch is valid: on the very tick that latches
+// it in realtime, or on the confirmed close for historical bars (no intrabar
+// data exists to replay there). The touch price is already stored by the
+// varip latch, so the alert, marker and trade card all consume the same
+// immutable setup snapshot regardless of which path committed it.
+if armedBuyHighArmed and buyHighValidPlan and not liveTradeLocked and (barstate.isrealtime or barstate.isconfirmed)
+    // Freeze the complete trade plan at the exact LIVE trigger.
+    liveTradeLocked:=true
+    activeSetupId:=armedBuyHighSetupId
+    activeDirection:="BUY"
+    activeRisk:=armedBuyHighRisk
+    activeConfirmation:=armedBuyHighConfirmation
+    activeExtraReasons:=armedBuyHighExtraReasons
+    activeCounterTrend:=armedBuyHighCounterTrend
+    activeConfluences:=armedBuyHighConfluences
+    activeEntry:=buyHighPlannedEntry
+    activeSL:=buyHighPlannedSL
+    activeTP:=buyHighPlannedTP
+    activeRR:=buyHighPlannedRR
+    activeStartBar:=bar_index
+    activeStartTime:=time
+    activeBreakEvenArmed:=false
+    activeTrailSL:=na
+    activeBreakEvenTriggerPips:=breakEvenTriggerPips
+    activeBreakEvenTriggerPrice:=math.round_to_mintick(activeEntry+breakEvenTriggerDistance)
+    float buyHighMarkerOffset=math.max(nz(chartATR,targetMinimumDistance)*0.20,pipSize*10.0)
+    activeMarkerPrice:=low-buyHighMarkerOffset
+
+    // Historical reconstruction creates a permanent marker immediately. It is
+    // visually identical to a normal BUY marker, while its tooltip states that
+    // no realtime alert was possible for the historical execution.
+    if not barstate.isrealtime and showBacktestMarkers and showMarkers and activeSetupId!="" and array.indexof(permanentMarkerSetupIds,activeSetupId)==-1
+        label buyHighHistoricalMarker=label.new(activeStartTime,activeMarkerPrice,"BUY",xloc=xloc.bar_time,yloc=yloc.price,style=label.style_label_up,color=buyColor,textcolor=premiumTextColor,size=size.small,tooltip="HISTORICAL RECONSTRUCTION • NO ALERT • BUY")
+        array.push(permanentMarkerSetupIds,activeSetupId)
+        array.push(permanentMarkerLabels,buyHighHistoricalMarker)
+        while array.size(permanentMarkerSetupIds)>MAX_HISTORICAL_MARKERS
+            array.shift(permanentMarkerSetupIds)
+            label buyHighOldestHistoricalMarker=array.shift(permanentMarkerLabels)
+            label.delete(buyHighOldestHistoricalMarker)
+
+    activeExit:=na
+    activeResultPips:=na
+    state:="ACTIVE"
+    armedBuyHighArmed:=false
+    armedBuyHighSetupId:=""
+    armedBuyHighRisk:=""
+    armedBuyHighConfirmation:=""
+    armedBuyHighExtraReasons:=""
+    armedBuyHighCounterTrend:=false
+    armedBuyHighMtfCluster:=false
+    armedBuyHighSweepReclaim:=false
+    armedBuyHighPremiumLiquidity:=false
+    armedBuyHighDisplacementChoch:=false
+    armedBuyHighFvgFill:=false
+    armedBuyHighEmaSlope:=false
+    armedBuyHighEmaRegime:=false
+    armedBuyHighVWAP:=false
+    armedBuyHighAtBar:=na
+    armedBuyHighAtClock:=na
+    armedBuyHighZoneRetests:=0
+    armedBuyHighZoneExited:=false
+    armedBuyHighEntryLo:=na
+    armedBuyHighEntryHi:=na
+    armedBuyHighEntryTime:=na
+    armedBuyHighTouchLatched:=false
+    armedBuyHighTouchPrice:=na
+    liveEvent:=true
+    realtimeLiveEvent:=barstate.isrealtime
+
+
+//--------------------------------------------------------------------------------------------------
+// BUY-LOW slot — arm on S2, resync, invalidate, touch, plan, release
+//--------------------------------------------------------------------------------------------------
+// A direction cannot start a fresh READY zone while its own trade is the one
+// currently ACTIVE. The opposite direction is never gated here.
+bool buyLowArmEligible=freshEntryClose and not armedBuyLowArmed and not (liveTradeLocked and activeDirection=="BUY")
+
+if buyLowArmEligible
+    int buyLowRetests=f_zone_retest_count(buyLowLo,buyLowHi,buyLowTime,entryCandleTime,supportSeconds,entryHighs,entryLows,entryTimes)
+    bool buyLowRetestValid=buyLowRetests<=MAXIMUM_ZONE_RETESTS
+    // Counter-trend and trend-following routes share the same confirmation
+    // bar now — no extra reversal-quality gate. Confluence count is no
+    // longer required either; it only feeds the confidence label.
+    bool buyLowConfirmationValid=allowBuy and bullishArmedConfirmationLow
+    // The entry rectangle is the drawn zone itself now, not a single
+    // candle picked from inside it — this removes the biggest frequency
+    // bottleneck (waiting for one qualifying candle to exist in the zone).
+    // The zone must still sit fully below CMP so READY never arms on a
+    // level price has already blown through.
+    float buyLowEntryLo=buyLowLo
+    float buyLowEntryHi=buyLowHi
+    int buyLowEntryTime=buyLowTime
+    bool buyLowZoneCorrectSide=not na(buyLowEntryHi) and buyLowEntryHi<close-readySideBuffer
+    bool buyLowCandidate=buyLowConfirmationValid and not na(buyLowEntryLo) and not na(buyLowEntryHi) and buyLowEntryHi>buyLowEntryLo and buyLowZoneCorrectSide and buyLowRetestValid and buyLowConfluences>=minimumConfluenceForLive
+
+    if buyLowCandidate
+        armedBuyLowArmed:=true
+        armedBuyLowRisk:="LOW RISK"
+        armedBuyLowConfirmation:=bullishConfirmationNameLow
+        armedBuyLowCounterTrend:=buyIsCounterTrend
+        armedBuyLowMtfCluster:=buyLowMtfCluster
+        armedBuyLowSweepReclaim:=bullishAnySweepInBuyLowZone
+        armedBuyLowPremiumLiquidity:=bullishPremiumSweepInBuyLowZone
+        armedBuyLowDisplacementChoch:=bullishDisplacementInBuyLowZone
+        armedBuyLowFvgFill:=bullishFvgInBuyLowZone
+        armedBuyLowEmaSlope:=buyEmaSlopeConfluence
+        armedBuyLowEmaRegime:=buyEmaRegimeConfluence
+        armedBuyLowVWAP:=buyLowVWAPConfluence
+        armedBuyLowAtBar:=bar_index
+        armedBuyLowConfluences:=buyLowConfluences
+        armedBuyLowSupportLo:=buyLowLo
+        armedBuyLowSupportHi:=buyLowHi
+        armedBuyLowZoneRetests:=buyLowRetests
+        armedBuyLowZoneExited:=false
+        armedBuyLowEntryLo:=buyLowEntryLo
+        armedBuyLowEntryHi:=buyLowEntryHi
+        armedBuyLowEntryTime:=buyLowEntryTime
+        armedBuyLowAtClock:=barstate.isrealtime?timenow:time_close
+        armedBuyLowSetupId:="BUY-"+str.tostring(buyLowEntryTime)+"-"+str.tostring(bar_index)
+        armedBuyLowTouchLatched:=false
+        armedBuyLowTouchPrice:=na
+        armedBuyLowEvent:=true
+
+// The supporting map can recalculate while READY is waiting, and the bias can
+// flip which zone (HIGH vs LOW RISK) this direction should be using. Resync
+// keeps the armed rectangle anchored to whatever is currently the correct zone.
+bool buyLowZoneChanged=armedBuyLowArmed and (na(armedBuyLowSupportLo) or na(armedBuyLowSupportHi) or math.abs(buyLowLo-armedBuyLowSupportLo)>syminfo.mintick or math.abs(buyLowHi-armedBuyLowSupportHi)>syminfo.mintick)
+
+if buyLowZoneChanged
+    float syncedBuyLowEntryLo=buyLowLo
+    float syncedBuyLowEntryHi=buyLowHi
+    int syncedBuyLowEntryTime=buyLowTime
+    bool syncedBuyLowZoneCorrectSide=not na(syncedBuyLowEntryHi) and syncedBuyLowEntryHi<close-readySideBuffer
+    int syncedBuyLowRetests=f_zone_retest_count(buyLowLo,buyLowHi,buyLowTime,entryCandleTime,supportSeconds,entryHighs,entryLows,entryTimes)
+    bool syncedBuyLowCandidateValid=not na(syncedBuyLowEntryLo) and not na(syncedBuyLowEntryHi) and syncedBuyLowEntryHi>syncedBuyLowEntryLo and syncedBuyLowZoneCorrectSide and allowBuy and bullishArmedConfirmationLow and syncedBuyLowRetests<=MAXIMUM_ZONE_RETESTS and buyLowConfluences>=minimumConfluenceForLive
+
+    if syncedBuyLowCandidateValid
+        armedBuyLowSupportLo:=buyLowLo
+        armedBuyLowSupportHi:=buyLowHi
+        armedBuyLowEntryLo:=syncedBuyLowEntryLo
+        armedBuyLowEntryHi:=syncedBuyLowEntryHi
+        armedBuyLowEntryTime:=syncedBuyLowEntryTime
+        armedBuyLowConfluences:=buyLowConfluences
+        armedBuyLowMtfCluster:=buyLowMtfCluster
+        armedBuyLowSweepReclaim:=bullishAnySweepInBuyLowZone
+        armedBuyLowPremiumLiquidity:=bullishPremiumSweepInBuyLowZone
+        armedBuyLowDisplacementChoch:=bullishDisplacementInBuyLowZone
+        armedBuyLowFvgFill:=bullishFvgInBuyLowZone
+        armedBuyLowEmaSlope:=buyEmaSlopeConfluence
+        armedBuyLowEmaRegime:=buyEmaRegimeConfluence
+        armedBuyLowVWAP:=buyLowVWAPConfluence
+        armedBuyLowZoneRetests:=syncedBuyLowRetests
+        armedBuyLowZoneExited:=false
+        armedBuyLowRisk:="LOW RISK"
+        armedBuyLowConfirmation:=bullishConfirmationNameLow
+        armedBuyLowCounterTrend:=buyIsCounterTrend
+        // Keep the original READY candle for LIVE eligibility.
+        // Only the entry rectangle/map data is synchronized here.
+        armedBuyLowAtClock:=barstate.isrealtime?timenow:time_close
+        armedBuyLowSetupId:="BUY-"+str.tostring(syncedBuyLowEntryTime)+"-"+str.tostring(bar_index)
+        armedBuyLowTouchLatched:=false
+        armedBuyLowTouchPrice:=na
+        armedBuyLowEvent:=true
+    else
+        // No valid full candle exists inside the currently drawn risk box.
+        // Remove the stale READY signal and wait for a fresh valid setup.
+        armedBuyLowArmed:=false
+        armedBuyLowSetupId:=""
+        armedBuyLowRisk:=""
+        armedBuyLowConfirmation:=""
+        armedBuyLowExtraReasons:=""
+        armedBuyLowCounterTrend:=false
+        armedBuyLowMtfCluster:=false
+        armedBuyLowSweepReclaim:=false
+        armedBuyLowPremiumLiquidity:=false
+        armedBuyLowDisplacementChoch:=false
+        armedBuyLowFvgFill:=false
+        armedBuyLowEmaSlope:=false
+        armedBuyLowEmaRegime:=false
+        armedBuyLowVWAP:=false
+        armedBuyLowAtBar:=na
+        armedBuyLowAtClock:=na
+        armedBuyLowZoneRetests:=0
+        armedBuyLowZoneExited:=false
+        armedBuyLowEntryLo:=na
+        armedBuyLowEntryHi:=na
+        armedBuyLowEntryTime:=na
+        armedBuyLowTouchLatched:=false
+        armedBuyLowTouchPrice:=na
+
+if armedBuyLowEvent
+    float armedBuyLowMid=(armedBuyLowSupportLo+armedBuyLowSupportHi)/2.0
+    bool buyLowReasonBRN=f_near_round(armedBuyLowMid,brnStep,confluenceTolerance)
+    bool buyLowReasonMicro=not buyLowReasonBRN and f_near_round(armedBuyLowMid,microBrnStep,confluenceTolerance)
+    bool buyLowReasonEMA=f_near(armedBuyLowMid,supportEMA,confluenceTolerance)
+    bool buyLowReasonTrend=f_near(armedBuyLowMid,supportTrendSupport,confluenceTolerance)
+    bool buyLowReasonFib=f_near(armedBuyLowMid,buyFib50,confluenceTolerance) or f_near(armedBuyLowMid,buyFib618,confluenceTolerance)
+
+    armedBuyLowExtraReasons:=""
+    bool buyLowReasonCHOCH=bullishRecentChoch and not armedBuyLowDisplacementChoch and not armedBuyLowFvgFill
+    if buyLowReasonCHOCH
+        armedBuyLowExtraReasons:=armedBuyLowExtraReasons+"\nCHOCH"
+    if armedBuyLowMtfCluster
+        armedBuyLowExtraReasons:=armedBuyLowExtraReasons+"\nMTF LEVEL CLUSTER"
+    if armedBuyLowPremiumLiquidity
+        armedBuyLowExtraReasons:=armedBuyLowExtraReasons+"\n"+lastBullishPremiumSweepType+" SWEEP + RECLAIM"
+    else if armedBuyLowSweepReclaim
+        armedBuyLowExtraReasons:=armedBuyLowExtraReasons+"\nLIQUIDITY SWEEP + RECLAIM"
+    if armedBuyLowDisplacementChoch
+        armedBuyLowExtraReasons:=armedBuyLowExtraReasons+"\nDISPLACEMENT CHOCH"
+    if armedBuyLowFvgFill
+        armedBuyLowExtraReasons:=armedBuyLowExtraReasons+"\nFAIR VALUE GAP FILL"
+    if armedBuyLowEmaSlope
+        armedBuyLowExtraReasons:=armedBuyLowExtraReasons+"\nEMA13 SLOPE"
+    if armedBuyLowEmaRegime
+        armedBuyLowExtraReasons:=armedBuyLowExtraReasons+"\nEMA13 / EMA50 REGIME"
+    if armedBuyLowVWAP
+        armedBuyLowExtraReasons:=armedBuyLowExtraReasons+"\nDAILY VWAP"
+    if buyLowReasonBRN
+        armedBuyLowExtraReasons:=armedBuyLowExtraReasons+"\nBRN CONFLUENCE"
+    if buyLowReasonMicro
+        armedBuyLowExtraReasons:=armedBuyLowExtraReasons+"\nMICRO BRN CONFLUENCE"
+    if buyLowReasonEMA
+        armedBuyLowExtraReasons:=armedBuyLowExtraReasons+"\nEMA REJECTION"
+    if buyLowReasonTrend
+        armedBuyLowExtraReasons:=armedBuyLowExtraReasons+"\nTRENDLINE CONFLUENCE"
+    if buyLowReasonFib
+        armedBuyLowExtraReasons:=armedBuyLowExtraReasons+"\nFIBONACCI CONFLUENCE"
+
+bool buyLowExpired=armedBuyLowArmed and not na(armedBuyLowAtClock) and armedClock-armedBuyLowAtClock>armedExpiryEntryBars*entrySeconds*1000.0
+// Counter-trend READY setups are frozen: once armed as counter-trend, only
+// the zone, expiry and retest rules manage them (unchanged from v4.7.0). A
+// trend-armed setup still invalidates if the trend route breaks.
+bool buyLowTrendRouteInvalid=armedBuyLowArmed and not armedBuyLowCounterTrend and not trendBuyRoute
+bool buyLowBiasInvalid=buyLowTrendRouteInvalid
+bool buyLowZoneInvalid=armedBuyLowArmed and close<armedBuyLowSupportLo-invalidationBuffer
+
+bool buyLowSupportTouched=armedBuyLowArmed and f_overlap(low,high,armedBuyLowSupportLo,armedBuyLowSupportHi)
+if armedBuyLowArmed and not buyLowSupportTouched
+    armedBuyLowZoneExited:=true
+bool buyLowRetestLimitInvalid=armedBuyLowArmed and armedBuyLowZoneExited and buyLowSupportTouched and armedBuyLowZoneRetests>=MAXIMUM_ZONE_RETESTS
+
+// READY must remain pending on the correct side of CMP.
+// A genuine touch has priority and must transition to LIVE instead of being invalidated.
+bool armedBuyLowEntryTouchedNow=armedBuyLowArmed and f_overlap(low,high,armedBuyLowEntryLo,armedBuyLowEntryHi)
+bool buyLowEntrySideInvalid=armedBuyLowArmed and not armedBuyLowEntryTouchedNow and armedBuyLowEntryHi>=close-readySideBuffer
+
+// READY rectangle must remain completely inside the exact risk box
+// currently drawn on the chart, not only the zone frozen at initial arming.
+bool buyLowEntryOutsideVisibleRiskZone=armedBuyLowArmed and (na(buyLowLo) or na(buyLowHi) or na(armedBuyLowEntryLo) or na(armedBuyLowEntryHi) or armedBuyLowEntryLo<buyLowLo-syminfo.mintick or armedBuyLowEntryHi>buyLowHi+syminfo.mintick)
+
+// LIVE starts only from a completely later chart candle.
+// The original READY candle is preserved even when the visible map synchronizes.
+// Any later candle that actually overlaps the current frozen entry rectangle can trigger LIVE.
+bool buyLowTouchAfterArming=armedBuyLowArmed and not na(armedBuyLowAtBar) and bar_index>armedBuyLowAtBar
+bool buyLowFirstTouchNow=buyLowTouchAfterArming and armedBuyLowEntryTouchedNow and not armedBuyLowTouchLatched
+
+if buyLowFirstTouchNow
+    armedBuyLowTouchLatched:=true
+    armedBuyLowTouchPrice:=f_touch_entry(armedBuyLowEntryLo,armedBuyLowEntryHi,close[1],open,close)
+
+// Before the first touch, normal READY invalidation still applies.
+// Once touched, the latched event has priority and cannot be erased by a later tick.
+bool buyLowReadyInvalidBeforeTouch=buyLowExpired or buyLowBiasInvalid or buyLowZoneInvalid or buyLowRetestLimitInvalid or buyLowEntrySideInvalid or buyLowEntryOutsideVisibleRiskZone
+if armedBuyLowArmed and not armedBuyLowTouchLatched and (buyLowReadyInvalidBeforeTouch or not chartMatchesSelected)
+    armedBuyLowArmed:=false
+    armedBuyLowSetupId:=""
+    armedBuyLowRisk:=""
+    armedBuyLowConfirmation:=""
+    armedBuyLowExtraReasons:=""
+    armedBuyLowCounterTrend:=false
+    armedBuyLowMtfCluster:=false
+    armedBuyLowSweepReclaim:=false
+    armedBuyLowPremiumLiquidity:=false
+    armedBuyLowDisplacementChoch:=false
+    armedBuyLowFvgFill:=false
+    armedBuyLowEmaSlope:=false
+    armedBuyLowEmaRegime:=false
+    armedBuyLowVWAP:=false
+    armedBuyLowAtClock:=na
+    armedBuyLowZoneRetests:=0
+    armedBuyLowZoneExited:=false
+    armedBuyLowEntryLo:=na
+    armedBuyLowEntryHi:=na
+    armedBuyLowTouchLatched:=false
+    armedBuyLowTouchPrice:=na
+
+bool buyLowEntryTouched=armedBuyLowArmed and armedBuyLowTouchLatched
+
+// Entry price is frozen at the first actual touch and cannot move or disappear.
+float buyLowPlannedEntry=buyLowEntryTouched?armedBuyLowTouchPrice:na
+float buyLowPlannedSL=na
+float buyLowPlannedTP=na
+float buyLowPlannedRR=na
+
+if buyLowEntryTouched and chartMatchesSelected
+    float buyLowBaseSL=math.round_to_mintick(armedBuyLowEntryLo-volatilityStopDistance)
+    float buyLowFreshSupport=f_nearest_below4(armedBuyLowEntryLo-snrBuffer,S1,S2,supportSwingLow,supportTrendSupport)
+    float buyLowProtectedSL=not na(buyLowFreshSupport)?math.round_to_mintick(buyLowFreshSupport+snrBuffer):buyLowBaseSL
+    buyLowPlannedSL:=math.max(buyLowBaseSL,buyLowProtectedSL)
+
+    if buyLowPlannedSL<buyLowPlannedEntry
+        float buyLowRiskDistance=buyLowPlannedEntry-buyLowPlannedSL
+        float buyLowDesiredReward=f_clamp(math.max(volatilityTargetDistance,buyLowRiskDistance*1.5),targetMinimumDistance,targetMaximumDistance)
+        buyLowDesiredReward:=math.min(buyLowDesiredReward,buyLowRiskDistance*maximumRR)
+        float buyLowFreshResistance=f_nearest_above4(buyLowPlannedEntry,R1,R2,supportSwingHigh,supportTrendResistance)
+        float buyLowAvailableReward=not na(buyLowFreshResistance)?buyLowFreshResistance-snrBuffer-buyLowPlannedEntry:buyLowDesiredReward
+        float buyLowRewardDistance=math.min(buyLowDesiredReward,buyLowAvailableReward)
+        buyLowPlannedTP:=buyLowRewardDistance>=buyLowRiskDistance*minimumRR?math.round_to_mintick(buyLowPlannedEntry+buyLowRewardDistance):na
+        buyLowPlannedRR:=not na(buyLowPlannedTP)?(buyLowPlannedTP-buyLowPlannedEntry)/buyLowRiskDistance:na
+
+// A touched READY setup must always be released as LIVE.
+// When the structure-based TP/SL plan is unavailable, build a bounded
+// ATR/risk fallback instead of dropping the touch event.
+bool buyLowPrimaryPlanValid=buyLowEntryTouched and not na(buyLowPlannedEntry) and not na(buyLowPlannedSL) and not na(buyLowPlannedTP) and not na(buyLowPlannedRR) and buyLowPlannedRR>=minimumRR and buyLowPlannedRR<=maximumRR+0.0001
+
+if buyLowEntryTouched and not buyLowPrimaryPlanValid and not na(buyLowPlannedEntry)
+    float buyLowFallbackRisk=math.max(volatilityStopDistance,targetMinimumDistance/maximumRR)
+    float buyLowFallbackRewardFloor=buyLowFallbackRisk*minimumRR
+    float buyLowFallbackRewardCeiling=math.max(buyLowFallbackRewardFloor,math.min(targetMaximumDistance,buyLowFallbackRisk*maximumRR))
+    float buyLowFallbackReward=f_clamp(math.max(volatilityTargetDistance,targetMinimumDistance),buyLowFallbackRewardFloor,buyLowFallbackRewardCeiling)
+    buyLowPlannedSL:=math.round_to_mintick(buyLowPlannedEntry-buyLowFallbackRisk)
+    buyLowPlannedTP:=math.round_to_mintick(buyLowPlannedEntry+buyLowFallbackReward)
+    buyLowPlannedRR:=buyLowFallbackReward/buyLowFallbackRisk
+
+bool buyLowValidPlan=buyLowEntryTouched and armedBuyLowConfluences>=minimumConfluenceForLive and not na(buyLowPlannedEntry) and not na(buyLowPlannedSL) and not na(buyLowPlannedTP) and not na(buyLowPlannedRR) and buyLowPlannedRR>=minimumRR and buyLowPlannedRR<=maximumRR+0.0001
+
+// Commit LIVE the instant the touch is valid: on the very tick that latches
+// it in realtime, or on the confirmed close for historical bars (no intrabar
+// data exists to replay there). The touch price is already stored by the
+// varip latch, so the alert, marker and trade card all consume the same
+// immutable setup snapshot regardless of which path committed it.
+if armedBuyLowArmed and buyLowValidPlan and not liveTradeLocked and (barstate.isrealtime or barstate.isconfirmed)
+    // Freeze the complete trade plan at the exact LIVE trigger.
+    liveTradeLocked:=true
+    activeSetupId:=armedBuyLowSetupId
+    activeDirection:="BUY"
+    activeRisk:=armedBuyLowRisk
+    activeConfirmation:=armedBuyLowConfirmation
+    activeExtraReasons:=armedBuyLowExtraReasons
+    activeCounterTrend:=armedBuyLowCounterTrend
+    activeConfluences:=armedBuyLowConfluences
+    activeEntry:=buyLowPlannedEntry
+    activeSL:=buyLowPlannedSL
+    activeTP:=buyLowPlannedTP
+    activeRR:=buyLowPlannedRR
+    activeStartBar:=bar_index
+    activeStartTime:=time
+    activeBreakEvenArmed:=false
+    activeTrailSL:=na
+    activeBreakEvenTriggerPips:=breakEvenTriggerPips
+    activeBreakEvenTriggerPrice:=math.round_to_mintick(activeEntry+breakEvenTriggerDistance)
+    float buyLowMarkerOffset=math.max(nz(chartATR,targetMinimumDistance)*0.20,pipSize*10.0)
+    activeMarkerPrice:=low-buyLowMarkerOffset
+
+    // Historical reconstruction creates a permanent marker immediately. It is
+    // visually identical to a normal BUY marker, while its tooltip states that
+    // no realtime alert was possible for the historical execution.
+    if not barstate.isrealtime and showBacktestMarkers and showMarkers and activeSetupId!="" and array.indexof(permanentMarkerSetupIds,activeSetupId)==-1
+        label buyLowHistoricalMarker=label.new(activeStartTime,activeMarkerPrice,"BUY",xloc=xloc.bar_time,yloc=yloc.price,style=label.style_label_up,color=buyColor,textcolor=premiumTextColor,size=size.small,tooltip="HISTORICAL RECONSTRUCTION • NO ALERT • BUY")
+        array.push(permanentMarkerSetupIds,activeSetupId)
+        array.push(permanentMarkerLabels,buyLowHistoricalMarker)
+        while array.size(permanentMarkerSetupIds)>MAX_HISTORICAL_MARKERS
+            array.shift(permanentMarkerSetupIds)
+            label buyLowOldestHistoricalMarker=array.shift(permanentMarkerLabels)
+            label.delete(buyLowOldestHistoricalMarker)
+
+    activeExit:=na
+    activeResultPips:=na
+    state:="ACTIVE"
+    armedBuyLowArmed:=false
+    armedBuyLowSetupId:=""
+    armedBuyLowRisk:=""
+    armedBuyLowConfirmation:=""
+    armedBuyLowExtraReasons:=""
+    armedBuyLowCounterTrend:=false
+    armedBuyLowMtfCluster:=false
+    armedBuyLowSweepReclaim:=false
+    armedBuyLowPremiumLiquidity:=false
+    armedBuyLowDisplacementChoch:=false
+    armedBuyLowFvgFill:=false
+    armedBuyLowEmaSlope:=false
+    armedBuyLowEmaRegime:=false
+    armedBuyLowVWAP:=false
+    armedBuyLowAtBar:=na
+    armedBuyLowAtClock:=na
+    armedBuyLowZoneRetests:=0
+    armedBuyLowZoneExited:=false
+    armedBuyLowEntryLo:=na
+    armedBuyLowEntryHi:=na
+    armedBuyLowEntryTime:=na
+    armedBuyLowTouchLatched:=false
+    armedBuyLowTouchPrice:=na
+    liveEvent:=true
+    realtimeLiveEvent:=barstate.isrealtime
+
+
+//--------------------------------------------------------------------------------------------------
+// SELL-HIGH slot — arm on R1, resync, invalidate, touch, plan, release
+//--------------------------------------------------------------------------------------------------
+bool sellHighArmEligible=freshEntryClose and not armedSellHighArmed and not (liveTradeLocked and activeDirection=="SELL")
+
+if sellHighArmEligible
+    int sellHighRetests=f_zone_retest_count(sellHighLo,sellHighHi,sellHighTime,entryCandleTime,supportSeconds,entryHighs,entryLows,entryTimes)
+    bool sellHighRetestValid=sellHighRetests<=MAXIMUM_ZONE_RETESTS
+    bool sellHighConfirmationValid=allowSell and bearishArmedConfirmationHigh
+    float sellHighEntryLo=sellHighLo
+    float sellHighEntryHi=sellHighHi
+    int sellHighEntryTime=sellHighTime
+    bool sellHighZoneCorrectSide=not na(sellHighEntryLo) and sellHighEntryLo>close+readySideBuffer
+    bool sellHighCandidate=sellHighConfirmationValid and not na(sellHighEntryLo) and not na(sellHighEntryHi) and sellHighEntryHi>sellHighEntryLo and sellHighZoneCorrectSide and sellHighRetestValid and sellHighConfluences>=minimumConfluenceForLive
+
+    if sellHighCandidate
+        armedSellHighArmed:=true
+        armedSellHighRisk:="HIGH RISK"
+        armedSellHighConfirmation:=bearishConfirmationNameHigh
+        armedSellHighCounterTrend:=sellIsCounterTrend
+        armedSellHighMtfCluster:=sellHighMtfCluster
+        armedSellHighSweepReclaim:=bearishAnySweepInSellHighZone
+        armedSellHighPremiumLiquidity:=bearishPremiumSweepInSellHighZone
+        armedSellHighDisplacementChoch:=bearishDisplacementInSellHighZone
+        armedSellHighFvgFill:=bearishFvgInSellHighZone
+        armedSellHighEmaSlope:=sellEmaSlopeConfluence
+        armedSellHighEmaRegime:=sellEmaRegimeConfluence
+        armedSellHighVWAP:=sellHighVWAPConfluence
+        armedSellHighAtBar:=bar_index
+        armedSellHighConfluences:=sellHighConfluences
+        armedSellHighSupportLo:=sellHighLo
+        armedSellHighSupportHi:=sellHighHi
+        armedSellHighZoneRetests:=sellHighRetests
+        armedSellHighZoneExited:=false
+        armedSellHighEntryLo:=sellHighEntryLo
+        armedSellHighEntryHi:=sellHighEntryHi
+        armedSellHighEntryTime:=sellHighEntryTime
+        armedSellHighAtClock:=barstate.isrealtime?timenow:time_close
+        armedSellHighSetupId:="SELL-"+str.tostring(sellHighEntryTime)+"-"+str.tostring(bar_index)
+        armedSellHighTouchLatched:=false
+        armedSellHighTouchPrice:=na
+        armedSellHighEvent:=true
+
+bool sellHighZoneChanged=armedSellHighArmed and (na(armedSellHighSupportLo) or na(armedSellHighSupportHi) or math.abs(sellHighLo-armedSellHighSupportLo)>syminfo.mintick or math.abs(sellHighHi-armedSellHighSupportHi)>syminfo.mintick)
+
+if sellHighZoneChanged
+    float syncedSellHighEntryLo=sellHighLo
+    float syncedSellHighEntryHi=sellHighHi
+    int syncedSellHighEntryTime=sellHighTime
+    bool syncedSellHighZoneCorrectSide=not na(syncedSellHighEntryLo) and syncedSellHighEntryLo>close+readySideBuffer
+    int syncedSellHighRetests=f_zone_retest_count(sellHighLo,sellHighHi,sellHighTime,entryCandleTime,supportSeconds,entryHighs,entryLows,entryTimes)
+    bool syncedSellHighCandidateValid=not na(syncedSellHighEntryLo) and not na(syncedSellHighEntryHi) and syncedSellHighEntryHi>syncedSellHighEntryLo and syncedSellHighZoneCorrectSide and allowSell and bearishArmedConfirmationHigh and syncedSellHighRetests<=MAXIMUM_ZONE_RETESTS and sellHighConfluences>=minimumConfluenceForLive
+
+    if syncedSellHighCandidateValid
+        armedSellHighSupportLo:=sellHighLo
+        armedSellHighSupportHi:=sellHighHi
+        armedSellHighEntryLo:=syncedSellHighEntryLo
+        armedSellHighEntryHi:=syncedSellHighEntryHi
+        armedSellHighEntryTime:=syncedSellHighEntryTime
+        armedSellHighConfluences:=sellHighConfluences
+        armedSellHighMtfCluster:=sellHighMtfCluster
+        armedSellHighSweepReclaim:=bearishAnySweepInSellHighZone
+        armedSellHighPremiumLiquidity:=bearishPremiumSweepInSellHighZone
+        armedSellHighDisplacementChoch:=bearishDisplacementInSellHighZone
+        armedSellHighFvgFill:=bearishFvgInSellHighZone
+        armedSellHighEmaSlope:=sellEmaSlopeConfluence
+        armedSellHighEmaRegime:=sellEmaRegimeConfluence
+        armedSellHighVWAP:=sellHighVWAPConfluence
+        armedSellHighZoneRetests:=syncedSellHighRetests
+        armedSellHighZoneExited:=false
+        armedSellHighRisk:="HIGH RISK"
+        armedSellHighConfirmation:=bearishConfirmationNameHigh
+        armedSellHighCounterTrend:=sellIsCounterTrend
+        armedSellHighAtClock:=barstate.isrealtime?timenow:time_close
+        armedSellHighSetupId:="SELL-"+str.tostring(syncedSellHighEntryTime)+"-"+str.tostring(bar_index)
+        armedSellHighTouchLatched:=false
+        armedSellHighTouchPrice:=na
+        armedSellHighEvent:=true
+    else
+        armedSellHighArmed:=false
+        armedSellHighSetupId:=""
+        armedSellHighRisk:=""
+        armedSellHighConfirmation:=""
+        armedSellHighExtraReasons:=""
+        armedSellHighCounterTrend:=false
+        armedSellHighMtfCluster:=false
+        armedSellHighSweepReclaim:=false
+        armedSellHighPremiumLiquidity:=false
+        armedSellHighDisplacementChoch:=false
+        armedSellHighFvgFill:=false
+        armedSellHighEmaSlope:=false
+        armedSellHighEmaRegime:=false
+        armedSellHighVWAP:=false
+        armedSellHighAtBar:=na
+        armedSellHighAtClock:=na
+        armedSellHighZoneRetests:=0
+        armedSellHighZoneExited:=false
+        armedSellHighEntryLo:=na
+        armedSellHighEntryHi:=na
+        armedSellHighEntryTime:=na
+        armedSellHighTouchLatched:=false
+        armedSellHighTouchPrice:=na
+
+if armedSellHighEvent
+    float armedSellHighMid=(armedSellHighSupportLo+armedSellHighSupportHi)/2.0
+    bool sellHighReasonBRN=f_near_round(armedSellHighMid,brnStep,confluenceTolerance)
+    bool sellHighReasonMicro=not sellHighReasonBRN and f_near_round(armedSellHighMid,microBrnStep,confluenceTolerance)
+    bool sellHighReasonEMA=f_near(armedSellHighMid,supportEMA,confluenceTolerance)
+    bool sellHighReasonTrend=f_near(armedSellHighMid,supportTrendResistance,confluenceTolerance)
+    bool sellHighReasonFib=f_near(armedSellHighMid,sellFib50,confluenceTolerance) or f_near(armedSellHighMid,sellFib618,confluenceTolerance)
+
+    armedSellHighExtraReasons:=""
+    bool sellHighReasonCHOCH=bearishRecentChoch and not armedSellHighDisplacementChoch and not armedSellHighFvgFill
+    if sellHighReasonCHOCH
+        armedSellHighExtraReasons:=armedSellHighExtraReasons+"\nCHOCH"
+    if armedSellHighMtfCluster
+        armedSellHighExtraReasons:=armedSellHighExtraReasons+"\nMTF LEVEL CLUSTER"
+    if armedSellHighPremiumLiquidity
+        armedSellHighExtraReasons:=armedSellHighExtraReasons+"\n"+lastBearishPremiumSweepType+" SWEEP + RECLAIM"
+    else if armedSellHighSweepReclaim
+        armedSellHighExtraReasons:=armedSellHighExtraReasons+"\nLIQUIDITY SWEEP + RECLAIM"
+    if armedSellHighDisplacementChoch
+        armedSellHighExtraReasons:=armedSellHighExtraReasons+"\nDISPLACEMENT CHOCH"
+    if armedSellHighFvgFill
+        armedSellHighExtraReasons:=armedSellHighExtraReasons+"\nFAIR VALUE GAP FILL"
+    if armedSellHighEmaSlope
+        armedSellHighExtraReasons:=armedSellHighExtraReasons+"\nEMA13 SLOPE"
+    if armedSellHighEmaRegime
+        armedSellHighExtraReasons:=armedSellHighExtraReasons+"\nEMA13 / EMA50 REGIME"
+    if armedSellHighVWAP
+        armedSellHighExtraReasons:=armedSellHighExtraReasons+"\nDAILY VWAP"
+    if sellHighReasonBRN
+        armedSellHighExtraReasons:=armedSellHighExtraReasons+"\nBRN CONFLUENCE"
+    if sellHighReasonMicro
+        armedSellHighExtraReasons:=armedSellHighExtraReasons+"\nMICRO BRN CONFLUENCE"
+    if sellHighReasonEMA
+        armedSellHighExtraReasons:=armedSellHighExtraReasons+"\nEMA REJECTION"
+    if sellHighReasonTrend
+        armedSellHighExtraReasons:=armedSellHighExtraReasons+"\nTRENDLINE CONFLUENCE"
+    if sellHighReasonFib
+        armedSellHighExtraReasons:=armedSellHighExtraReasons+"\nFIBONACCI CONFLUENCE"
+
+bool sellHighExpired=armedSellHighArmed and not na(armedSellHighAtClock) and armedClock-armedSellHighAtClock>armedExpiryEntryBars*entrySeconds*1000.0
+bool sellHighTrendRouteInvalid=armedSellHighArmed and not armedSellHighCounterTrend and not trendSellRoute
+bool sellHighBiasInvalid=sellHighTrendRouteInvalid
+bool sellHighZoneInvalid=armedSellHighArmed and close>armedSellHighSupportHi+invalidationBuffer
+
+bool sellHighSupportTouched=armedSellHighArmed and f_overlap(low,high,armedSellHighSupportLo,armedSellHighSupportHi)
+if armedSellHighArmed and not sellHighSupportTouched
+    armedSellHighZoneExited:=true
+bool sellHighRetestLimitInvalid=armedSellHighArmed and armedSellHighZoneExited and sellHighSupportTouched and armedSellHighZoneRetests>=MAXIMUM_ZONE_RETESTS
+
+bool armedSellHighEntryTouchedNow=armedSellHighArmed and f_overlap(low,high,armedSellHighEntryLo,armedSellHighEntryHi)
+bool sellHighEntrySideInvalid=armedSellHighArmed and not armedSellHighEntryTouchedNow and armedSellHighEntryLo<=close+readySideBuffer
+
+bool sellHighEntryOutsideVisibleRiskZone=armedSellHighArmed and (na(sellHighLo) or na(sellHighHi) or na(armedSellHighEntryLo) or na(armedSellHighEntryHi) or armedSellHighEntryLo<sellHighLo-syminfo.mintick or armedSellHighEntryHi>sellHighHi+syminfo.mintick)
+
+bool sellHighTouchAfterArming=armedSellHighArmed and not na(armedSellHighAtBar) and bar_index>armedSellHighAtBar
+bool sellHighFirstTouchNow=sellHighTouchAfterArming and armedSellHighEntryTouchedNow and not armedSellHighTouchLatched
+
+if sellHighFirstTouchNow
+    armedSellHighTouchLatched:=true
+    armedSellHighTouchPrice:=f_touch_entry(armedSellHighEntryLo,armedSellHighEntryHi,close[1],open,close)
+
+bool sellHighReadyInvalidBeforeTouch=sellHighExpired or sellHighBiasInvalid or sellHighZoneInvalid or sellHighRetestLimitInvalid or sellHighEntrySideInvalid or sellHighEntryOutsideVisibleRiskZone
+if armedSellHighArmed and not armedSellHighTouchLatched and (sellHighReadyInvalidBeforeTouch or not chartMatchesSelected)
+    armedSellHighArmed:=false
+    armedSellHighSetupId:=""
+    armedSellHighRisk:=""
+    armedSellHighConfirmation:=""
+    armedSellHighExtraReasons:=""
+    armedSellHighCounterTrend:=false
+    armedSellHighMtfCluster:=false
+    armedSellHighSweepReclaim:=false
+    armedSellHighPremiumLiquidity:=false
+    armedSellHighDisplacementChoch:=false
+    armedSellHighFvgFill:=false
+    armedSellHighEmaSlope:=false
+    armedSellHighEmaRegime:=false
+    armedSellHighVWAP:=false
+    armedSellHighAtClock:=na
+    armedSellHighZoneRetests:=0
+    armedSellHighZoneExited:=false
+    armedSellHighEntryLo:=na
+    armedSellHighEntryHi:=na
+    armedSellHighTouchLatched:=false
+    armedSellHighTouchPrice:=na
+
+bool sellHighEntryTouched=armedSellHighArmed and armedSellHighTouchLatched
+
+float sellHighPlannedEntry=sellHighEntryTouched?armedSellHighTouchPrice:na
+float sellHighPlannedSL=na
+float sellHighPlannedTP=na
+float sellHighPlannedRR=na
+
+if sellHighEntryTouched and chartMatchesSelected
+    float sellHighBaseSL=math.round_to_mintick(armedSellHighEntryHi+volatilityStopDistance)
+    float sellHighFreshResistance=f_nearest_above4(armedSellHighEntryHi+snrBuffer,R1,R2,supportSwingHigh,supportTrendResistance)
+    float sellHighProtectedSL=not na(sellHighFreshResistance)?math.round_to_mintick(sellHighFreshResistance-snrBuffer):sellHighBaseSL
+    sellHighPlannedSL:=math.min(sellHighBaseSL,sellHighProtectedSL)
+
+    if sellHighPlannedSL>sellHighPlannedEntry
+        float sellHighRiskDistance=sellHighPlannedSL-sellHighPlannedEntry
+        float sellHighDesiredReward=f_clamp(math.max(volatilityTargetDistance,sellHighRiskDistance*1.5),targetMinimumDistance,targetMaximumDistance)
+        sellHighDesiredReward:=math.min(sellHighDesiredReward,sellHighRiskDistance*maximumRR)
+        float sellHighFreshSupport=f_nearest_below4(sellHighPlannedEntry,S1,S2,supportSwingLow,supportTrendSupport)
+        float sellHighAvailableReward=not na(sellHighFreshSupport)?sellHighPlannedEntry-(sellHighFreshSupport+snrBuffer):sellHighDesiredReward
+        float sellHighRewardDistance=math.min(sellHighDesiredReward,sellHighAvailableReward)
+        sellHighPlannedTP:=sellHighRewardDistance>=sellHighRiskDistance*minimumRR?math.round_to_mintick(sellHighPlannedEntry-sellHighRewardDistance):na
+        sellHighPlannedRR:=not na(sellHighPlannedTP)?(sellHighPlannedEntry-sellHighPlannedTP)/sellHighRiskDistance:na
+
+bool sellHighPrimaryPlanValid=sellHighEntryTouched and not na(sellHighPlannedEntry) and not na(sellHighPlannedSL) and not na(sellHighPlannedTP) and not na(sellHighPlannedRR) and sellHighPlannedRR>=minimumRR and sellHighPlannedRR<=maximumRR+0.0001
+
+if sellHighEntryTouched and not sellHighPrimaryPlanValid and not na(sellHighPlannedEntry)
+    float sellHighFallbackRisk=math.max(volatilityStopDistance,targetMinimumDistance/maximumRR)
+    float sellHighFallbackRewardFloor=sellHighFallbackRisk*minimumRR
+    float sellHighFallbackRewardCeiling=math.max(sellHighFallbackRewardFloor,math.min(targetMaximumDistance,sellHighFallbackRisk*maximumRR))
+    float sellHighFallbackReward=f_clamp(math.max(volatilityTargetDistance,targetMinimumDistance),sellHighFallbackRewardFloor,sellHighFallbackRewardCeiling)
+    sellHighPlannedSL:=math.round_to_mintick(sellHighPlannedEntry+sellHighFallbackRisk)
+    sellHighPlannedTP:=math.round_to_mintick(sellHighPlannedEntry-sellHighFallbackReward)
+    sellHighPlannedRR:=sellHighFallbackReward/sellHighFallbackRisk
+
+bool sellHighValidPlan=sellHighEntryTouched and armedSellHighConfluences>=minimumConfluenceForLive and not na(sellHighPlannedEntry) and not na(sellHighPlannedSL) and not na(sellHighPlannedTP) and not na(sellHighPlannedRR) and sellHighPlannedRR>=minimumRR and sellHighPlannedRR<=maximumRR+0.0001
+
+if armedSellHighArmed and sellHighValidPlan and not liveTradeLocked and (barstate.isrealtime or barstate.isconfirmed)
+    liveTradeLocked:=true
+    activeSetupId:=armedSellHighSetupId
+    activeDirection:="SELL"
+    activeRisk:=armedSellHighRisk
+    activeConfirmation:=armedSellHighConfirmation
+    activeExtraReasons:=armedSellHighExtraReasons
+    activeCounterTrend:=armedSellHighCounterTrend
+    activeConfluences:=armedSellHighConfluences
+    activeEntry:=sellHighPlannedEntry
+    activeSL:=sellHighPlannedSL
+    activeTP:=sellHighPlannedTP
+    activeRR:=sellHighPlannedRR
+    activeStartBar:=bar_index
+    activeStartTime:=time
+    activeBreakEvenArmed:=false
+    activeTrailSL:=na
+    activeBreakEvenTriggerPips:=breakEvenTriggerPips
+    activeBreakEvenTriggerPrice:=math.round_to_mintick(activeEntry-breakEvenTriggerDistance)
+    float sellHighMarkerOffset=math.max(nz(chartATR,targetMinimumDistance)*0.20,pipSize*10.0)
+    activeMarkerPrice:=high+sellHighMarkerOffset
+
+    if not barstate.isrealtime and showBacktestMarkers and showMarkers and activeSetupId!="" and array.indexof(permanentMarkerSetupIds,activeSetupId)==-1
+        label sellHighHistoricalMarker=label.new(activeStartTime,activeMarkerPrice,"SELL",xloc=xloc.bar_time,yloc=yloc.price,style=label.style_label_down,color=sellColor,textcolor=premiumTextColor,size=size.small,tooltip="HISTORICAL RECONSTRUCTION • NO ALERT • SELL")
+        array.push(permanentMarkerSetupIds,activeSetupId)
+        array.push(permanentMarkerLabels,sellHighHistoricalMarker)
+        while array.size(permanentMarkerSetupIds)>MAX_HISTORICAL_MARKERS
+            array.shift(permanentMarkerSetupIds)
+            label sellHighOldestHistoricalMarker=array.shift(permanentMarkerLabels)
+            label.delete(sellHighOldestHistoricalMarker)
+
+    activeExit:=na
+    activeResultPips:=na
+    state:="ACTIVE"
+    armedSellHighArmed:=false
+    armedSellHighSetupId:=""
+    armedSellHighRisk:=""
+    armedSellHighConfirmation:=""
+    armedSellHighExtraReasons:=""
+    armedSellHighCounterTrend:=false
+    armedSellHighMtfCluster:=false
+    armedSellHighSweepReclaim:=false
+    armedSellHighPremiumLiquidity:=false
+    armedSellHighDisplacementChoch:=false
+    armedSellHighFvgFill:=false
+    armedSellHighEmaSlope:=false
+    armedSellHighEmaRegime:=false
+    armedSellHighVWAP:=false
+    armedSellHighAtBar:=na
+    armedSellHighAtClock:=na
+    armedSellHighZoneRetests:=0
+    armedSellHighZoneExited:=false
+    armedSellHighEntryLo:=na
+    armedSellHighEntryHi:=na
+    armedSellHighEntryTime:=na
+    armedSellHighTouchLatched:=false
+    armedSellHighTouchPrice:=na
+    liveEvent:=true
+    realtimeLiveEvent:=barstate.isrealtime
+
+//--------------------------------------------------------------------------------------------------
+// SELL-LOW slot — arm on R2, resync, invalidate, touch, plan, release
+//--------------------------------------------------------------------------------------------------
+bool sellLowArmEligible=freshEntryClose and not armedSellLowArmed and not (liveTradeLocked and activeDirection=="SELL")
+
+if sellLowArmEligible
+    int sellLowRetests=f_zone_retest_count(sellLowLo,sellLowHi,sellLowTime,entryCandleTime,supportSeconds,entryHighs,entryLows,entryTimes)
+    bool sellLowRetestValid=sellLowRetests<=MAXIMUM_ZONE_RETESTS
+    bool sellLowConfirmationValid=allowSell and bearishArmedConfirmationLow
+    float sellLowEntryLo=sellLowLo
+    float sellLowEntryHi=sellLowHi
+    int sellLowEntryTime=sellLowTime
+    bool sellLowZoneCorrectSide=not na(sellLowEntryLo) and sellLowEntryLo>close+readySideBuffer
+    bool sellLowCandidate=sellLowConfirmationValid and not na(sellLowEntryLo) and not na(sellLowEntryHi) and sellLowEntryHi>sellLowEntryLo and sellLowZoneCorrectSide and sellLowRetestValid and sellLowConfluences>=minimumConfluenceForLive
+
+    if sellLowCandidate
+        armedSellLowArmed:=true
+        armedSellLowRisk:="LOW RISK"
+        armedSellLowConfirmation:=bearishConfirmationNameLow
+        armedSellLowCounterTrend:=sellIsCounterTrend
+        armedSellLowMtfCluster:=sellLowMtfCluster
+        armedSellLowSweepReclaim:=bearishAnySweepInSellLowZone
+        armedSellLowPremiumLiquidity:=bearishPremiumSweepInSellLowZone
+        armedSellLowDisplacementChoch:=bearishDisplacementInSellLowZone
+        armedSellLowFvgFill:=bearishFvgInSellLowZone
+        armedSellLowEmaSlope:=sellEmaSlopeConfluence
+        armedSellLowEmaRegime:=sellEmaRegimeConfluence
+        armedSellLowVWAP:=sellLowVWAPConfluence
+        armedSellLowAtBar:=bar_index
+        armedSellLowConfluences:=sellLowConfluences
+        armedSellLowSupportLo:=sellLowLo
+        armedSellLowSupportHi:=sellLowHi
+        armedSellLowZoneRetests:=sellLowRetests
+        armedSellLowZoneExited:=false
+        armedSellLowEntryLo:=sellLowEntryLo
+        armedSellLowEntryHi:=sellLowEntryHi
+        armedSellLowEntryTime:=sellLowEntryTime
+        armedSellLowAtClock:=barstate.isrealtime?timenow:time_close
+        armedSellLowSetupId:="SELL-"+str.tostring(sellLowEntryTime)+"-"+str.tostring(bar_index)
+        armedSellLowTouchLatched:=false
+        armedSellLowTouchPrice:=na
+        armedSellLowEvent:=true
+
+bool sellLowZoneChanged=armedSellLowArmed and (na(armedSellLowSupportLo) or na(armedSellLowSupportHi) or math.abs(sellLowLo-armedSellLowSupportLo)>syminfo.mintick or math.abs(sellLowHi-armedSellLowSupportHi)>syminfo.mintick)
+
+if sellLowZoneChanged
+    float syncedSellLowEntryLo=sellLowLo
+    float syncedSellLowEntryHi=sellLowHi
+    int syncedSellLowEntryTime=sellLowTime
+    bool syncedSellLowZoneCorrectSide=not na(syncedSellLowEntryLo) and syncedSellLowEntryLo>close+readySideBuffer
+    int syncedSellLowRetests=f_zone_retest_count(sellLowLo,sellLowHi,sellLowTime,entryCandleTime,supportSeconds,entryHighs,entryLows,entryTimes)
+    bool syncedSellLowCandidateValid=not na(syncedSellLowEntryLo) and not na(syncedSellLowEntryHi) and syncedSellLowEntryHi>syncedSellLowEntryLo and syncedSellLowZoneCorrectSide and allowSell and bearishArmedConfirmationLow and syncedSellLowRetests<=MAXIMUM_ZONE_RETESTS and sellLowConfluences>=minimumConfluenceForLive
+
+    if syncedSellLowCandidateValid
+        armedSellLowSupportLo:=sellLowLo
+        armedSellLowSupportHi:=sellLowHi
+        armedSellLowEntryLo:=syncedSellLowEntryLo
+        armedSellLowEntryHi:=syncedSellLowEntryHi
+        armedSellLowEntryTime:=syncedSellLowEntryTime
+        armedSellLowConfluences:=sellLowConfluences
+        armedSellLowMtfCluster:=sellLowMtfCluster
+        armedSellLowSweepReclaim:=bearishAnySweepInSellLowZone
+        armedSellLowPremiumLiquidity:=bearishPremiumSweepInSellLowZone
+        armedSellLowDisplacementChoch:=bearishDisplacementInSellLowZone
+        armedSellLowFvgFill:=bearishFvgInSellLowZone
+        armedSellLowEmaSlope:=sellEmaSlopeConfluence
+        armedSellLowEmaRegime:=sellEmaRegimeConfluence
+        armedSellLowVWAP:=sellLowVWAPConfluence
+        armedSellLowZoneRetests:=syncedSellLowRetests
+        armedSellLowZoneExited:=false
+        armedSellLowRisk:="LOW RISK"
+        armedSellLowConfirmation:=bearishConfirmationNameLow
+        armedSellLowCounterTrend:=sellIsCounterTrend
+        armedSellLowAtClock:=barstate.isrealtime?timenow:time_close
+        armedSellLowSetupId:="SELL-"+str.tostring(syncedSellLowEntryTime)+"-"+str.tostring(bar_index)
+        armedSellLowTouchLatched:=false
+        armedSellLowTouchPrice:=na
+        armedSellLowEvent:=true
+    else
+        armedSellLowArmed:=false
+        armedSellLowSetupId:=""
+        armedSellLowRisk:=""
+        armedSellLowConfirmation:=""
+        armedSellLowExtraReasons:=""
+        armedSellLowCounterTrend:=false
+        armedSellLowMtfCluster:=false
+        armedSellLowSweepReclaim:=false
+        armedSellLowPremiumLiquidity:=false
+        armedSellLowDisplacementChoch:=false
+        armedSellLowFvgFill:=false
+        armedSellLowEmaSlope:=false
+        armedSellLowEmaRegime:=false
+        armedSellLowVWAP:=false
+        armedSellLowAtBar:=na
+        armedSellLowAtClock:=na
+        armedSellLowZoneRetests:=0
+        armedSellLowZoneExited:=false
+        armedSellLowEntryLo:=na
+        armedSellLowEntryHi:=na
+        armedSellLowEntryTime:=na
+        armedSellLowTouchLatched:=false
+        armedSellLowTouchPrice:=na
+
+if armedSellLowEvent
+    float armedSellLowMid=(armedSellLowSupportLo+armedSellLowSupportHi)/2.0
+    bool sellLowReasonBRN=f_near_round(armedSellLowMid,brnStep,confluenceTolerance)
+    bool sellLowReasonMicro=not sellLowReasonBRN and f_near_round(armedSellLowMid,microBrnStep,confluenceTolerance)
+    bool sellLowReasonEMA=f_near(armedSellLowMid,supportEMA,confluenceTolerance)
+    bool sellLowReasonTrend=f_near(armedSellLowMid,supportTrendResistance,confluenceTolerance)
+    bool sellLowReasonFib=f_near(armedSellLowMid,sellFib50,confluenceTolerance) or f_near(armedSellLowMid,sellFib618,confluenceTolerance)
+
+    armedSellLowExtraReasons:=""
+    bool sellLowReasonCHOCH=bearishRecentChoch and not armedSellLowDisplacementChoch and not armedSellLowFvgFill
+    if sellLowReasonCHOCH
+        armedSellLowExtraReasons:=armedSellLowExtraReasons+"\nCHOCH"
+    if armedSellLowMtfCluster
+        armedSellLowExtraReasons:=armedSellLowExtraReasons+"\nMTF LEVEL CLUSTER"
+    if armedSellLowPremiumLiquidity
+        armedSellLowExtraReasons:=armedSellLowExtraReasons+"\n"+lastBearishPremiumSweepType+" SWEEP + RECLAIM"
+    else if armedSellLowSweepReclaim
+        armedSellLowExtraReasons:=armedSellLowExtraReasons+"\nLIQUIDITY SWEEP + RECLAIM"
+    if armedSellLowDisplacementChoch
+        armedSellLowExtraReasons:=armedSellLowExtraReasons+"\nDISPLACEMENT CHOCH"
+    if armedSellLowFvgFill
+        armedSellLowExtraReasons:=armedSellLowExtraReasons+"\nFAIR VALUE GAP FILL"
+    if armedSellLowEmaSlope
+        armedSellLowExtraReasons:=armedSellLowExtraReasons+"\nEMA13 SLOPE"
+    if armedSellLowEmaRegime
+        armedSellLowExtraReasons:=armedSellLowExtraReasons+"\nEMA13 / EMA50 REGIME"
+    if armedSellLowVWAP
+        armedSellLowExtraReasons:=armedSellLowExtraReasons+"\nDAILY VWAP"
+    if sellLowReasonBRN
+        armedSellLowExtraReasons:=armedSellLowExtraReasons+"\nBRN CONFLUENCE"
+    if sellLowReasonMicro
+        armedSellLowExtraReasons:=armedSellLowExtraReasons+"\nMICRO BRN CONFLUENCE"
+    if sellLowReasonEMA
+        armedSellLowExtraReasons:=armedSellLowExtraReasons+"\nEMA REJECTION"
+    if sellLowReasonTrend
+        armedSellLowExtraReasons:=armedSellLowExtraReasons+"\nTRENDLINE CONFLUENCE"
+    if sellLowReasonFib
+        armedSellLowExtraReasons:=armedSellLowExtraReasons+"\nFIBONACCI CONFLUENCE"
+
+bool sellLowExpired=armedSellLowArmed and not na(armedSellLowAtClock) and armedClock-armedSellLowAtClock>armedExpiryEntryBars*entrySeconds*1000.0
+bool sellLowTrendRouteInvalid=armedSellLowArmed and not armedSellLowCounterTrend and not trendSellRoute
+bool sellLowBiasInvalid=sellLowTrendRouteInvalid
+bool sellLowZoneInvalid=armedSellLowArmed and close>armedSellLowSupportHi+invalidationBuffer
+
+bool sellLowSupportTouched=armedSellLowArmed and f_overlap(low,high,armedSellLowSupportLo,armedSellLowSupportHi)
+if armedSellLowArmed and not sellLowSupportTouched
+    armedSellLowZoneExited:=true
+bool sellLowRetestLimitInvalid=armedSellLowArmed and armedSellLowZoneExited and sellLowSupportTouched and armedSellLowZoneRetests>=MAXIMUM_ZONE_RETESTS
+
+bool armedSellLowEntryTouchedNow=armedSellLowArmed and f_overlap(low,high,armedSellLowEntryLo,armedSellLowEntryHi)
+bool sellLowEntrySideInvalid=armedSellLowArmed and not armedSellLowEntryTouchedNow and armedSellLowEntryLo<=close+readySideBuffer
+
+bool sellLowEntryOutsideVisibleRiskZone=armedSellLowArmed and (na(sellLowLo) or na(sellLowHi) or na(armedSellLowEntryLo) or na(armedSellLowEntryHi) or armedSellLowEntryLo<sellLowLo-syminfo.mintick or armedSellLowEntryHi>sellLowHi+syminfo.mintick)
+
+bool sellLowTouchAfterArming=armedSellLowArmed and not na(armedSellLowAtBar) and bar_index>armedSellLowAtBar
+bool sellLowFirstTouchNow=sellLowTouchAfterArming and armedSellLowEntryTouchedNow and not armedSellLowTouchLatched
+
+if sellLowFirstTouchNow
+    armedSellLowTouchLatched:=true
+    armedSellLowTouchPrice:=f_touch_entry(armedSellLowEntryLo,armedSellLowEntryHi,close[1],open,close)
+
+bool sellLowReadyInvalidBeforeTouch=sellLowExpired or sellLowBiasInvalid or sellLowZoneInvalid or sellLowRetestLimitInvalid or sellLowEntrySideInvalid or sellLowEntryOutsideVisibleRiskZone
+if armedSellLowArmed and not armedSellLowTouchLatched and (sellLowReadyInvalidBeforeTouch or not chartMatchesSelected)
+    armedSellLowArmed:=false
+    armedSellLowSetupId:=""
+    armedSellLowRisk:=""
+    armedSellLowConfirmation:=""
+    armedSellLowExtraReasons:=""
+    armedSellLowCounterTrend:=false
+    armedSellLowMtfCluster:=false
+    armedSellLowSweepReclaim:=false
+    armedSellLowPremiumLiquidity:=false
+    armedSellLowDisplacementChoch:=false
+    armedSellLowFvgFill:=false
+    armedSellLowEmaSlope:=false
+    armedSellLowEmaRegime:=false
+    armedSellLowVWAP:=false
+    armedSellLowAtClock:=na
+    armedSellLowZoneRetests:=0
+    armedSellLowZoneExited:=false
+    armedSellLowEntryLo:=na
+    armedSellLowEntryHi:=na
+    armedSellLowTouchLatched:=false
+    armedSellLowTouchPrice:=na
+
+bool sellLowEntryTouched=armedSellLowArmed and armedSellLowTouchLatched
+
+float sellLowPlannedEntry=sellLowEntryTouched?armedSellLowTouchPrice:na
+float sellLowPlannedSL=na
+float sellLowPlannedTP=na
+float sellLowPlannedRR=na
+
+if sellLowEntryTouched and chartMatchesSelected
+    float sellLowBaseSL=math.round_to_mintick(armedSellLowEntryHi+volatilityStopDistance)
+    float sellLowFreshResistance=f_nearest_above4(armedSellLowEntryHi+snrBuffer,R1,R2,supportSwingHigh,supportTrendResistance)
+    float sellLowProtectedSL=not na(sellLowFreshResistance)?math.round_to_mintick(sellLowFreshResistance-snrBuffer):sellLowBaseSL
+    sellLowPlannedSL:=math.min(sellLowBaseSL,sellLowProtectedSL)
+
+    if sellLowPlannedSL>sellLowPlannedEntry
+        float sellLowRiskDistance=sellLowPlannedSL-sellLowPlannedEntry
+        float sellLowDesiredReward=f_clamp(math.max(volatilityTargetDistance,sellLowRiskDistance*1.5),targetMinimumDistance,targetMaximumDistance)
+        sellLowDesiredReward:=math.min(sellLowDesiredReward,sellLowRiskDistance*maximumRR)
+        float sellLowFreshSupport=f_nearest_below4(sellLowPlannedEntry,S1,S2,supportSwingLow,supportTrendSupport)
+        float sellLowAvailableReward=not na(sellLowFreshSupport)?sellLowPlannedEntry-(sellLowFreshSupport+snrBuffer):sellLowDesiredReward
+        float sellLowRewardDistance=math.min(sellLowDesiredReward,sellLowAvailableReward)
+        sellLowPlannedTP:=sellLowRewardDistance>=sellLowRiskDistance*minimumRR?math.round_to_mintick(sellLowPlannedEntry-sellLowRewardDistance):na
+        sellLowPlannedRR:=not na(sellLowPlannedTP)?(sellLowPlannedEntry-sellLowPlannedTP)/sellLowRiskDistance:na
+
+bool sellLowPrimaryPlanValid=sellLowEntryTouched and not na(sellLowPlannedEntry) and not na(sellLowPlannedSL) and not na(sellLowPlannedTP) and not na(sellLowPlannedRR) and sellLowPlannedRR>=minimumRR and sellLowPlannedRR<=maximumRR+0.0001
+
+if sellLowEntryTouched and not sellLowPrimaryPlanValid and not na(sellLowPlannedEntry)
+    float sellLowFallbackRisk=math.max(volatilityStopDistance,targetMinimumDistance/maximumRR)
+    float sellLowFallbackRewardFloor=sellLowFallbackRisk*minimumRR
+    float sellLowFallbackRewardCeiling=math.max(sellLowFallbackRewardFloor,math.min(targetMaximumDistance,sellLowFallbackRisk*maximumRR))
+    float sellLowFallbackReward=f_clamp(math.max(volatilityTargetDistance,targetMinimumDistance),sellLowFallbackRewardFloor,sellLowFallbackRewardCeiling)
+    sellLowPlannedSL:=math.round_to_mintick(sellLowPlannedEntry+sellLowFallbackRisk)
+    sellLowPlannedTP:=math.round_to_mintick(sellLowPlannedEntry-sellLowFallbackReward)
+    sellLowPlannedRR:=sellLowFallbackReward/sellLowFallbackRisk
+
+bool sellLowValidPlan=sellLowEntryTouched and armedSellLowConfluences>=minimumConfluenceForLive and not na(sellLowPlannedEntry) and not na(sellLowPlannedSL) and not na(sellLowPlannedTP) and not na(sellLowPlannedRR) and sellLowPlannedRR>=minimumRR and sellLowPlannedRR<=maximumRR+0.0001
+
+if armedSellLowArmed and sellLowValidPlan and not liveTradeLocked and (barstate.isrealtime or barstate.isconfirmed)
+    liveTradeLocked:=true
+    activeSetupId:=armedSellLowSetupId
+    activeDirection:="SELL"
+    activeRisk:=armedSellLowRisk
+    activeConfirmation:=armedSellLowConfirmation
+    activeExtraReasons:=armedSellLowExtraReasons
+    activeCounterTrend:=armedSellLowCounterTrend
+    activeConfluences:=armedSellLowConfluences
+    activeEntry:=sellLowPlannedEntry
+    activeSL:=sellLowPlannedSL
+    activeTP:=sellLowPlannedTP
+    activeRR:=sellLowPlannedRR
+    activeStartBar:=bar_index
+    activeStartTime:=time
+    activeBreakEvenArmed:=false
+    activeTrailSL:=na
+    activeBreakEvenTriggerPips:=breakEvenTriggerPips
+    activeBreakEvenTriggerPrice:=math.round_to_mintick(activeEntry-breakEvenTriggerDistance)
+    float sellLowMarkerOffset=math.max(nz(chartATR,targetMinimumDistance)*0.20,pipSize*10.0)
+    activeMarkerPrice:=high+sellLowMarkerOffset
+
+    if not barstate.isrealtime and showBacktestMarkers and showMarkers and activeSetupId!="" and array.indexof(permanentMarkerSetupIds,activeSetupId)==-1
+        label sellLowHistoricalMarker=label.new(activeStartTime,activeMarkerPrice,"SELL",xloc=xloc.bar_time,yloc=yloc.price,style=label.style_label_down,color=sellColor,textcolor=premiumTextColor,size=size.small,tooltip="HISTORICAL RECONSTRUCTION • NO ALERT • SELL")
+        array.push(permanentMarkerSetupIds,activeSetupId)
+        array.push(permanentMarkerLabels,sellLowHistoricalMarker)
+        while array.size(permanentMarkerSetupIds)>MAX_HISTORICAL_MARKERS
+            array.shift(permanentMarkerSetupIds)
+            label sellLowOldestHistoricalMarker=array.shift(permanentMarkerLabels)
+            label.delete(sellLowOldestHistoricalMarker)
+
+    activeExit:=na
+    activeResultPips:=na
+    state:="ACTIVE"
+    armedSellLowArmed:=false
+    armedSellLowSetupId:=""
+    armedSellLowRisk:=""
+    armedSellLowConfirmation:=""
+    armedSellLowExtraReasons:=""
+    armedSellLowCounterTrend:=false
+    armedSellLowMtfCluster:=false
+    armedSellLowSweepReclaim:=false
+    armedSellLowPremiumLiquidity:=false
+    armedSellLowDisplacementChoch:=false
+    armedSellLowFvgFill:=false
+    armedSellLowEmaSlope:=false
+    armedSellLowEmaRegime:=false
+    armedSellLowVWAP:=false
+    armedSellLowAtBar:=na
+    armedSellLowAtClock:=na
+    armedSellLowZoneRetests:=0
+    armedSellLowZoneExited:=false
+    armedSellLowEntryLo:=na
+    armedSellLowEntryHi:=na
+    armedSellLowEntryTime:=na
+    armedSellLowTouchLatched:=false
+    armedSellLowTouchPrice:=na
+    liveEvent:=true
+    realtimeLiveEvent:=barstate.isrealtime
+
+
+//--------------------------------------------------------------------------------------------------
+// ACTIVE trade tracking, break-even and trailing stop (singular — unchanged
+// from v4.7.0)
+//--------------------------------------------------------------------------------------------------
+if state=="ACTIVE" and liveTradeLocked and (bar_index>activeStartBar or (barstate.isrealtime and not liveEvent))
+    // The initial SL remains active until the favorable break-even threshold is reached.
+    // Realtime uses the sequential live close after arming. Historical bars only allow
+    // a BE exit from a bar after the one that armed BE, avoiding same-bar path assumptions.
+    bool beWasArmed=activeBreakEvenArmed
+
+    // Once BE is armed, trail the protective stop by an ATR multiple instead
+    // of only guaranteeing a flat return-to-entry exit. Ratchets in the
+    // favorable direction only, and never worse than breakeven.
+    if beWasArmed and useTrailingAfterBE
+        float trailDistance=math.max(nz(chartATR,pipSize*20.0)*trailAfterBEAtrMult,pipSize*5.0)
+        float trailAnchor=activeDirection=="BUY"?(barstate.isrealtime?close:high):(barstate.isrealtime?close:low)
+        float candidateTrail=activeDirection=="BUY"?trailAnchor-trailDistance:trailAnchor+trailDistance
+        float previousTrail=nz(activeTrailSL,activeEntry)
+        activeTrailSL:=activeDirection=="BUY"?math.max(previousTrail,math.max(activeEntry,candidateTrail)):math.min(previousTrail,math.min(activeEntry,candidateTrail))
+    float protectiveStopLevel=useTrailingAfterBE?nz(activeTrailSL,activeEntry):activeEntry
+
+    bool initialStopHit=activeDirection=="BUY"?(barstate.isrealtime?close<=activeSL:low<=activeSL):(barstate.isrealtime?close>=activeSL:high>=activeSL)
+    bool targetHit=activeDirection=="BUY"?(barstate.isrealtime?close>=activeTP:high>=activeTP):(barstate.isrealtime?close<=activeTP:low<=activeTP)
+    float favorablePrice=activeDirection=="BUY"?(barstate.isrealtime?close:high):(barstate.isrealtime?close:low)
+    bool breakEvenActivationHit=useBreakEven and not beWasArmed and not na(activeBreakEvenTriggerPrice) and (activeDirection=="BUY"?favorablePrice>=activeBreakEvenTriggerPrice:favorablePrice<=activeBreakEvenTriggerPrice)
+    bool breakEvenReturnHit=beWasArmed and (activeDirection=="BUY"?(barstate.isrealtime?close<=protectiveStopLevel:low<=protectiveStopLevel):(barstate.isrealtime?close>=protectiveStopLevel:high>=protectiveStopLevel))
+
+    // Conservative historical ordering: initial SL before BE is checked first;
+    // once BE was already armed, a return to entry is checked before TP.
+    if not beWasArmed and initialStopHit
+        activeExit:=activeSL
+        activeResultPips:=activeDirection=="BUY"?(activeExit-activeEntry)/pipSize:(activeEntry-activeExit)/pipSize
+        state:="SL HIT"
+        int slResultClock=barstate.islast?timenow:time_close
+        resultStartedAt:=slResultClock
+        resultHideAt:=resultStartedAt+resultTTL
+        resultCardStatus:="SL HIT"
+        resultCardSetupId:=activeSetupId
+        resultCardDirection:=activeDirection
+        resultCardRisk:=activeRisk
+        resultCardConfirmation:=activeConfirmation
+        resultCardExtraReasons:=activeExtraReasons
+        resultCardConfluences:=activeConfluences
+        resultCardEntry:=activeEntry
+        resultCardSL:=activeSL
+        resultCardTP:=activeTP
+        resultCardExit:=activeExit
+        resultCardPips:=activeResultPips
+        slEvent:=true
+
+    else if beWasArmed and breakEvenReturnHit
+        activeExit:=protectiveStopLevel
+        activeResultPips:=activeDirection=="BUY"?(activeExit-activeEntry)/pipSize:(activeEntry-activeExit)/pipSize
+        state:="BE HIT"
+        int beResultClock=barstate.islast?timenow:time_close
+        resultStartedAt:=beResultClock
+        resultHideAt:=resultStartedAt+resultTTL
+        resultCardStatus:="BE HIT"
+        resultCardSetupId:=activeSetupId
+        resultCardDirection:=activeDirection
+        resultCardRisk:=activeRisk
+        resultCardConfirmation:=activeConfirmation
+        resultCardExtraReasons:=activeExtraReasons
+        resultCardConfluences:=activeConfluences
+        resultCardEntry:=activeEntry
+        resultCardSL:=protectiveStopLevel
+        resultCardTP:=activeTP
+        resultCardExit:=activeExit
+        resultCardPips:=activeResultPips
+        beEvent:=true
+
+    else if targetHit
+        activeExit:=activeTP
+        activeResultPips:=activeDirection=="BUY"?(activeExit-activeEntry)/pipSize:(activeEntry-activeExit)/pipSize
+        state:="TP HIT"
+        int tpResultClock=barstate.islast?timenow:time_close
+        resultStartedAt:=tpResultClock
+        resultHideAt:=resultStartedAt+resultTTL
+        resultCardStatus:="TP HIT"
+        resultCardSetupId:=activeSetupId
+        resultCardDirection:=activeDirection
+        resultCardRisk:=activeRisk
+        resultCardConfirmation:=activeConfirmation
+        resultCardExtraReasons:=activeExtraReasons
+        resultCardConfluences:=activeConfluences
+        resultCardEntry:=activeEntry
+        resultCardSL:=activeBreakEvenArmed?protectiveStopLevel:activeSL
+        resultCardTP:=activeTP
+        resultCardExit:=activeExit
+        resultCardPips:=activeResultPips
+        tpEvent:=true
+
+    else if breakEvenActivationHit
+        activeBreakEvenArmed:=true
+
+// The result card is independent from the mutable signal-engine state.
+// TP/SL/BE remains visible until the first chart update at or after 10 seconds.
+int resultClock=barstate.islast?timenow:time_close
+bool resultCardActive=resultCardStatus!="NONE"
+bool resultExpired=resultCardActive and (na(resultHideAt) or resultClock>=resultHideAt)
+bool resultVisible=resultCardActive and not resultExpired
+
+if resultCardActive and resultExpired
+    // Completed trades never prepare a recovery setup for the direction that
+    // just finished. Only the active*/result* fields reset here — the
+    // opposite direction's armed slot (if any) is left completely alone,
+    // since it may already be genuinely READY and waiting for exactly this
+    // moment to be eligible to release.
+    state:="MONITORING"
+    liveTradeLocked:=false
+    activeSetupId:=""
+    activeDirection:="NONE"
+    activeRisk:=""
+    activeConfirmation:=""
+    activeExtraReasons:=""
+    activeCounterTrend:=false
+    activeConfluences:=0
+    activeEntry:=na
+    activeSL:=na
+    activeTP:=na
+    activeTrailSL:=na
+    activeExit:=na
+    activeResultPips:=na
+    activeRR:=na
+    activeMarkerPrice:=na
+    activeStartBar:=na
+    activeStartTime:=na
+    activeBreakEvenArmed:=false
+    activeBreakEvenTriggerPips:=na
+    activeBreakEvenTriggerPrice:=na
+    resultStartedAt:=na
+    resultHideAt:=na
+
+if resultExpired
+    resultCardStatus:="NONE"
+    resultCardSetupId:=""
+    resultCardDirection:="NONE"
+    resultCardRisk:=""
+    resultCardConfirmation:=""
+    resultCardExtraReasons:=""
+    resultCardConfluences:=0
+    resultCardEntry:=na
+    resultCardSL:=na
+    resultCardTP:=na
+    resultCardExit:=na
+    resultCardPips:=na
+
+//--------------------------------------------------------------------------------------------------
+// Historical-to-realtime boundary reset
+//--------------------------------------------------------------------------------------------------
+// TradingView does not deliver alerts for historical executions, so a READY zone
+// reconstructed purely from history is always cleared here — it never alerted, and
+// re-arming costs nothing. An in-progress ACTIVE trade is deliberately left alone:
+// this boundary also re-fires on a silent data-feed reconnect (a backgrounded tab,
+// for example), which replays everything since the trade's own real alert as history
+// again. Wiping it here would erase a trade Telegram already has a message for, with
+// no way to tell it apart from one that was only ever reconstructed. Leaving it means
+// the normal TP/SL/BE tracking below replays the real OHLC since entry and lands on
+// whatever actually happened, while a trade that's still genuinely open keeps showing.
+if barstate.islastconfirmedhistory
+    armedBuyHighArmed:=false
+    armedBuyHighSetupId:=""
+    armedBuyHighRisk:=""
+    armedBuyHighConfirmation:=""
+    armedBuyHighExtraReasons:=""
+    armedBuyHighCounterTrend:=false
+    armedBuyHighMtfCluster:=false
+    armedBuyHighSweepReclaim:=false
+    armedBuyHighPremiumLiquidity:=false
+    armedBuyHighDisplacementChoch:=false
+    armedBuyHighFvgFill:=false
+    armedBuyHighEmaSlope:=false
+    armedBuyHighEmaRegime:=false
+    armedBuyHighVWAP:=false
+    armedBuyHighAtBar:=na
+    armedBuyHighAtClock:=na
+    armedBuyHighEntryLo:=na
+    armedBuyHighEntryHi:=na
+    armedBuyHighEntryTime:=na
+    armedBuyHighTouchLatched:=false
+    armedBuyHighTouchPrice:=na
+    armedBuyLowArmed:=false
+    armedBuyLowSetupId:=""
+    armedBuyLowRisk:=""
+    armedBuyLowConfirmation:=""
+    armedBuyLowExtraReasons:=""
+    armedBuyLowCounterTrend:=false
+    armedBuyLowMtfCluster:=false
+    armedBuyLowSweepReclaim:=false
+    armedBuyLowPremiumLiquidity:=false
+    armedBuyLowDisplacementChoch:=false
+    armedBuyLowFvgFill:=false
+    armedBuyLowEmaSlope:=false
+    armedBuyLowEmaRegime:=false
+    armedBuyLowVWAP:=false
+    armedBuyLowAtBar:=na
+    armedBuyLowAtClock:=na
+    armedBuyLowEntryLo:=na
+    armedBuyLowEntryHi:=na
+    armedBuyLowEntryTime:=na
+    armedBuyLowTouchLatched:=false
+    armedBuyLowTouchPrice:=na
+    armedSellHighArmed:=false
+    armedSellHighSetupId:=""
+    armedSellHighRisk:=""
+    armedSellHighConfirmation:=""
+    armedSellHighExtraReasons:=""
+    armedSellHighCounterTrend:=false
+    armedSellHighMtfCluster:=false
+    armedSellHighSweepReclaim:=false
+    armedSellHighPremiumLiquidity:=false
+    armedSellHighDisplacementChoch:=false
+    armedSellHighFvgFill:=false
+    armedSellHighEmaSlope:=false
+    armedSellHighEmaRegime:=false
+    armedSellHighVWAP:=false
+    armedSellHighAtBar:=na
+    armedSellHighAtClock:=na
+    armedSellHighEntryLo:=na
+    armedSellHighEntryHi:=na
+    armedSellHighEntryTime:=na
+    armedSellHighTouchLatched:=false
+    armedSellHighTouchPrice:=na
+    armedSellLowArmed:=false
+    armedSellLowSetupId:=""
+    armedSellLowRisk:=""
+    armedSellLowConfirmation:=""
+    armedSellLowExtraReasons:=""
+    armedSellLowCounterTrend:=false
+    armedSellLowMtfCluster:=false
+    armedSellLowSweepReclaim:=false
+    armedSellLowPremiumLiquidity:=false
+    armedSellLowDisplacementChoch:=false
+    armedSellLowFvgFill:=false
+    armedSellLowEmaSlope:=false
+    armedSellLowEmaRegime:=false
+    armedSellLowVWAP:=false
+    armedSellLowAtBar:=na
+    armedSellLowAtClock:=na
+    armedSellLowEntryLo:=na
+    armedSellLowEntryHi:=na
+    armedSellLowEntryTime:=na
+    armedSellLowTouchLatched:=false
+    armedSellLowTouchPrice:=na
+    // Only clear the ACTIVE trade fields when there isn't a trade genuinely
+    // in progress. If state is already "ACTIVE" here, leave it and every
+    // active* field untouched so a real, already-alerted trade survives
+    // this boundary instead of vanishing from the dashboard.
+    if state!="ACTIVE"
+        state:="MONITORING"
+        liveTradeLocked:=false
+        activeSetupId:=""
+        activeDirection:="NONE"
+        activeRisk:=""
+        activeConfirmation:=""
+        activeExtraReasons:=""
+        activeCounterTrend:=false
+        activeConfluences:=0
+        activeEntry:=na
+        activeSL:=na
+        activeTP:=na
+        activeTrailSL:=na
+        activeExit:=na
+        activeResultPips:=na
+        activeRR:=na
+        activeMarkerPrice:=na
+        activeStartBar:=na
+        activeStartTime:=na
+        activeBreakEvenArmed:=false
+        activeBreakEvenTriggerPips:=na
+        activeBreakEvenTriggerPrice:=na
+    resultStartedAt:=na
+    resultHideAt:=na
+    resultCardStatus:="NONE"
+    resultCardSetupId:=""
+    resultCardDirection:="NONE"
+    resultCardRisk:=""
+    resultCardConfirmation:=""
+    resultCardExtraReasons:=""
+    resultCardConfluences:=0
+    resultCardEntry:=na
+    resultCardSL:=na
+    resultCardTP:=na
+    resultCardExit:=na
+    resultCardPips:=na
+
+//--------------------------------------------------------------------------------------------------
+// Unified marker and alert events
+//--------------------------------------------------------------------------------------------------
+// The currently ACTIVE setup also displays BUY LIVE or SELL LIVE.
+// This LIVE badge is transient. The permanent BUY/SELL marker is committed only
+// after the matching realtime LIVE alert() call executes and remains after the trade ends.
+if showMarkers and state=="ACTIVE" and activeDirection!="NONE" and not na(activeStartTime) and not na(activeMarkerPrice)
+    string liveMarkerStyle=activeDirection=="BUY"?label.style_label_up:label.style_label_down
+    string liveMarkerText=activeDirection=="BUY"?"BUY LIVE":"SELL LIVE"
+    color liveMarkerColor=activeDirection=="BUY"?buyColor:sellColor
+
+    if na(currentLiveSignalMarker)
+        currentLiveSignalMarker:=label.new(activeStartTime,activeMarkerPrice,liveMarkerText,xloc=xloc.bar_time,yloc=yloc.price,style=liveMarkerStyle,color=liveMarkerColor,textcolor=premiumTextColor,size=size.small)
+    else
+        label.set_xy(currentLiveSignalMarker,activeStartTime,activeMarkerPrice)
+        label.set_text(currentLiveSignalMarker,liveMarkerText)
+        label.set_style(currentLiveSignalMarker,liveMarkerStyle)
+        label.set_color(currentLiveSignalMarker,liveMarkerColor)
+        label.set_textcolor(currentLiveSignalMarker,premiumTextColor)
+
+    // Permanent-marker safety net. Runs every bar a trade is ACTIVE, fully
+    // independent of alerts being enabled/successfully delivered — so even
+    // if the one-shot alert-commit tick is ever missed for any reason, the
+    // very next bar guarantees a marker exists for this setup instead of
+    // silently leaving an alerted trade with nothing drawn on the chart.
+    if activeSetupId!="" and array.indexof(permanentMarkerSetupIds,activeSetupId)==-1
+        string syncedMarkerStyle=activeDirection=="BUY"?label.style_label_up:label.style_label_down
+        color syncedMarkerColor=activeDirection=="BUY"?buyColor:sellColor
+        label syncedMarker=label.new(activeStartTime,activeMarkerPrice,activeDirection,xloc=xloc.bar_time,yloc=yloc.price,style=syncedMarkerStyle,color=syncedMarkerColor,textcolor=premiumTextColor,size=size.small,tooltip="ALERT-SYNCED • "+activeDirection)
+        array.push(permanentMarkerSetupIds,activeSetupId)
+        array.push(permanentMarkerLabels,syncedMarker)
+        while array.size(permanentMarkerSetupIds)>MAX_HISTORICAL_MARKERS
+            array.shift(permanentMarkerSetupIds)
+            label oldestSyncedMarker=array.shift(permanentMarkerLabels)
+            label.delete(oldestSyncedMarker)
+else
+    if not na(currentLiveSignalMarker)
+        label.delete(currentLiveSignalMarker)
+        currentLiveSignalMarker:=na
+
+// Dynamic alerts consume the same confirmed immutable event snapshot.
+// alert.freq_all is paired with setup/state keys, so each event is delivered once
+// without suppressing another event that happens in the same chart bar.
+// No READY alert: the READY box/dashboard/card still draw on chart as before,
+// but no alert() fires until a setup actually goes LIVE (unchanged from v4.7.0).
+if enableAlerts and realtimeLiveEvent and alertLive
+    string liveAlertKey=activeSetupId+"|LIVE"
+    if liveAlertKey!=lastLiveAlertKey
+        string activeEmoji=activeDirection=="BUY"?"🟢":"🔴"
+        string counterTrendLine=activeCounterTrend?"\n⚠️ COUNTER-TREND TRADE":""
+        string activeMessage=activeEmoji+" "+activeDirection+" • TRADE ACTIVE\n\n"+syminfo.ticker+" • "+mode+" • "+entryTfLabel+"\n\nENTRY: "+f_price(activeEntry)+"\nTAKE PROFIT: "+f_price(activeTP)+"\nSTOP LOSS: "+f_price(activeSL)+"\n\nCONFLUENCES: "+str.tostring(activeConfluences)+"\n━━━━━━━━━━━━━━━\n⚡️ POSITION ACTIVE"+counterTrendLine+"\n\nEZYMAP • SCALP MASTERY"
+        alert(activeMessage,alert.freq_all)
+        lastLiveAlertKey:=liveAlertKey
+
+if enableAlerts and barstate.isrealtime and (tpEvent or slEvent or beEvent) and alertResult
+    string resultAlertKey=resultCardSetupId+"|"+resultCardStatus
+    if resultAlertKey!=lastResultAlertKey
+        string resultMessage=tpEvent?"✅ COLLECT PROFIT\n\n"+syminfo.ticker+" • "+resultCardDirection+" • "+entryTfLabel+"\n\nRESULT\n"+f_signed(resultCardPips)+"\n\nEZYMAP • SCALP MASTERY":slEvent?"❌ HIT RISK\n\n"+syminfo.ticker+" • "+resultCardDirection+" • "+entryTfLabel+"\n\nRESULT\n"+f_signed(resultCardPips)+"\n\nEZYMAP • SCALP MASTERY":"⚪ BREAK EVEN\n\n"+syminfo.ticker+" • "+resultCardDirection+" • "+entryTfLabel+"\n\nRESULT\n"+f_signed(resultCardPips)+"\n\nEZYMAP • SCALP MASTERY"
+        alert(resultMessage,alert.freq_all)
+        lastResultAlertKey:=resultAlertKey
+
+alertcondition(realtimeLiveEvent,"EzyMap Pro LIVE","EzyMap Pro live setup released")
+alertcondition(tpEvent and barstate.isrealtime,"EzyMap Pro TP","EzyMap Pro take profit hit")
+alertcondition(slEvent and barstate.isrealtime,"EzyMap Pro SL","EzyMap Pro stop loss hit")
+alertcondition(beEvent and barstate.isrealtime,"EzyMap Pro BE","EzyMap Pro break-even hit")
+
+//--------------------------------------------------------------------------------------------------
+// Drawings
+//--------------------------------------------------------------------------------------------------
+var line s1Line=na
+var line s2Line=na
+var line r1Line=na
+var line r2Line=na
+var label s1Label=na
+var label s2Label=na
+var label r1Label=na
+var label r2Label=na
+var box buyHighBox=na
+var box buyLowBox=na
+var box sellHighBox=na
+var box sellLowBox=na
+
+int mapLeft=time-24*60*60*1000
+
+if barstate.islast
+    if showDirectionLevels
+        if na(s1Line)
+            s1Line:=line.new(mapLeft,S1,time,S1,xloc=xloc.bar_time,extend=extend.right,color=supportColor,width=2)
+            s2Line:=line.new(mapLeft,S2,time,S2,xloc=xloc.bar_time,extend=extend.right,color=color.new(supportColor,25),width=1)
+            r1Line:=line.new(mapLeft,R1,time,R1,xloc=xloc.bar_time,extend=extend.right,color=resistanceColor,width=2)
+            r2Line:=line.new(mapLeft,R2,time,R2,xloc=xloc.bar_time,extend=extend.right,color=color.new(resistanceColor,25),width=1)
+        line.set_xy1(s1Line,mapLeft,S1)
+        line.set_xy2(s1Line,time,S1)
+        line.set_xy1(s2Line,mapLeft,S2)
+        line.set_xy2(s2Line,time,S2)
+        line.set_xy1(r1Line,mapLeft,R1)
+        line.set_xy2(r1Line,time,R1)
+        line.set_xy1(r2Line,mapLeft,R2)
+        line.set_xy2(r2Line,time,R2)
+
+        if na(s1Label)
+            s1Label:=label.new(time,S1,"S1",xloc=xloc.bar_time,yloc=yloc.price,style=label.style_label_left,color=supportColor,textcolor=color.black,size=size.small)
+            s2Label:=label.new(time,S2,"S2",xloc=xloc.bar_time,yloc=yloc.price,style=label.style_label_left,color=color.new(supportColor,25),textcolor=color.black,size=size.small)
+            r1Label:=label.new(time,R1,"R1",xloc=xloc.bar_time,yloc=yloc.price,style=label.style_label_left,color=resistanceColor,textcolor=color.black,size=size.small)
+            r2Label:=label.new(time,R2,"R2",xloc=xloc.bar_time,yloc=yloc.price,style=label.style_label_left,color=color.new(resistanceColor,25),textcolor=color.black,size=size.small)
+
+        label.set_xy(s1Label,time,S1)
+        label.set_text(s1Label,"S1 - "+f_price(S1))
+        label.set_xy(s2Label,time,S2)
+        label.set_text(s2Label,"S2 - "+f_price(S2))
+        label.set_xy(r1Label,time,R1)
+        label.set_text(r1Label,"R1 - "+f_price(R1))
+        label.set_xy(r2Label,time,R2)
+        label.set_text(r2Label,"R2 - "+f_price(R2))
+    else
+        if not na(s1Line)
+            line.delete(s1Line)
+            line.delete(s2Line)
+            line.delete(r1Line)
+            line.delete(r2Line)
+            s1Line:=na
+            s2Line:=na
+            r1Line:=na
+            r2Line:=na
+        if not na(s1Label)
+            label.delete(s1Label)
+            label.delete(s2Label)
+            label.delete(r1Label)
+            label.delete(r2Label)
+            s1Label:=na
+            s2Label:=na
+            r1Label:=na
+            r2Label:=na
+
+    if showSupportingZones
+        if na(buyHighBox)
+            buyHighBox:=box.new(mapLeft,buyHighHi,time,buyHighLo,xloc=xloc.bar_time,extend=extend.right,text_color=color.black,text_size=size.small,text_halign=text.align_left)
+            buyLowBox:=box.new(mapLeft,buyLowHi,time,buyLowLo,xloc=xloc.bar_time,extend=extend.right,text_color=color.black,text_size=size.small,text_halign=text.align_left)
+            sellHighBox:=box.new(mapLeft,sellHighHi,time,sellHighLo,xloc=xloc.bar_time,extend=extend.right,text_color=color.black,text_size=size.small,text_halign=text.align_left)
+            sellLowBox:=box.new(mapLeft,sellLowHi,time,sellLowLo,xloc=xloc.bar_time,extend=extend.right,text_color=color.black,text_size=size.small,text_halign=text.align_left)
+
+        box.set_lefttop(buyHighBox,mapLeft,buyHighHi)
+        box.set_rightbottom(buyHighBox,time,buyHighLo)
+        box.set_lefttop(buyLowBox,mapLeft,buyLowHi)
+        box.set_rightbottom(buyLowBox,time,buyLowLo)
+        box.set_lefttop(sellHighBox,mapLeft,sellHighHi)
+        box.set_rightbottom(sellHighBox,time,sellHighLo)
+        box.set_lefttop(sellLowBox,mapLeft,sellLowHi)
+        box.set_rightbottom(sellLowBox,time,sellLowLo)
+
+        // V1.2: the entry rectangle is now the zone itself, so a separate
+        // floating entry box would just duplicate whichever static zone box
+        // is currently armed/live. Instead each of the four zone boxes
+        // restyles itself in place: NONE (plain map zone) / READY (this
+        // exact zone is the one currently armed) / LIVE (this exact zone is
+        // behind the current ACTIVE trade, or its just-finished result is
+        // still on screen).
+        // V1.8: HIGH and LOW risk zones are independent live-signal slots
+        // per direction, so both boxes can be READY/LIVE at once. LIVE is
+        // decided by activeRisk (which zone the current ACTIVE trade came
+        // from), not by trend/counter-trend.
+        bool showingLockedTrade=state=="ACTIVE" or resultVisible
+        bool buyHighLive=showEntryZone and showingLockedTrade and activeDirection=="BUY" and activeRisk=="HIGH RISK"
+        bool buyLowLive=showEntryZone and showingLockedTrade and activeDirection=="BUY" and activeRisk=="LOW RISK"
+        bool sellHighLive=showEntryZone and showingLockedTrade and activeDirection=="SELL" and activeRisk=="HIGH RISK"
+        bool sellLowLive=showEntryZone and showingLockedTrade and activeDirection=="SELL" and activeRisk=="LOW RISK"
+        bool buyHighReady=showEntryZone and armedBuyHighArmed
+        bool buyLowReady=showEntryZone and armedBuyLowArmed
+        bool sellHighReady=showEntryZone and armedSellHighArmed
+        bool sellLowReady=showEntryZone and armedSellLowArmed
+
+        if buyHighLive
+            box.set_bgcolor(buyHighBox,color.new(buyColor,45))
+            box.set_border_color(buyHighBox,buyColor)
+            box.set_border_width(buyHighBox,4)
+            box.set_text(buyHighBox,"BUY ZONE - HIGH RISK • LIVE • "+activeRisk)
+        else if buyHighReady
+            box.set_bgcolor(buyHighBox,color.new(buyColor,60))
+            box.set_border_color(buyHighBox,buyColor)
+            box.set_border_width(buyHighBox,3)
+            box.set_text(buyHighBox,"BUY ZONE - HIGH RISK • READY")
+        else
+            box.set_bgcolor(buyHighBox,color.new(supportColor,82))
+            box.set_border_color(buyHighBox,color.new(supportColor,20))
+            box.set_border_width(buyHighBox,2)
+            box.set_text(buyHighBox,"BUY ZONE - HIGH RISK")
+
+        if buyLowLive
+            box.set_bgcolor(buyLowBox,color.new(buyColor,45))
+            box.set_border_color(buyLowBox,buyColor)
+            box.set_border_width(buyLowBox,4)
+            box.set_text(buyLowBox,"BUY ZONE - LOW RISK • LIVE • "+activeRisk)
+        else if buyLowReady
+            box.set_bgcolor(buyLowBox,color.new(buyColor,60))
+            box.set_border_color(buyLowBox,buyColor)
+            box.set_border_width(buyLowBox,3)
+            box.set_text(buyLowBox,"BUY ZONE - LOW RISK • READY")
+        else
+            box.set_bgcolor(buyLowBox,color.new(supportColor,68))
+            box.set_border_color(buyLowBox,supportColor)
+            box.set_border_width(buyLowBox,3)
+            box.set_text(buyLowBox,"BUY ZONE - LOW RISK")
+
+        if sellHighLive
+            box.set_bgcolor(sellHighBox,color.new(sellColor,45))
+            box.set_border_color(sellHighBox,sellColor)
+            box.set_border_width(sellHighBox,4)
+            box.set_text(sellHighBox,"SELL ZONE - HIGH RISK • LIVE • "+activeRisk)
+        else if sellHighReady
+            box.set_bgcolor(sellHighBox,color.new(sellColor,60))
+            box.set_border_color(sellHighBox,sellColor)
+            box.set_border_width(sellHighBox,3)
+            box.set_text(sellHighBox,"SELL ZONE - HIGH RISK • READY")
+        else
+            box.set_bgcolor(sellHighBox,color.new(resistanceColor,82))
+            box.set_border_color(sellHighBox,color.new(resistanceColor,20))
+            box.set_border_width(sellHighBox,2)
+            box.set_text(sellHighBox,"SELL ZONE - HIGH RISK")
+
+        if sellLowLive
+            box.set_bgcolor(sellLowBox,color.new(sellColor,45))
+            box.set_border_color(sellLowBox,sellColor)
+            box.set_border_width(sellLowBox,4)
+            box.set_text(sellLowBox,"SELL ZONE - LOW RISK • LIVE • "+activeRisk)
+        else if sellLowReady
+            box.set_bgcolor(sellLowBox,color.new(sellColor,60))
+            box.set_border_color(sellLowBox,sellColor)
+            box.set_border_width(sellLowBox,3)
+            box.set_text(sellLowBox,"SELL ZONE - LOW RISK • READY")
+        else
+            box.set_bgcolor(sellLowBox,color.new(resistanceColor,68))
+            box.set_border_color(sellLowBox,resistanceColor)
+            box.set_border_width(sellLowBox,3)
+            box.set_text(sellLowBox,"SELL ZONE - LOW RISK")
+    else
+        if not na(buyHighBox)
+            box.delete(buyHighBox)
+            box.delete(buyLowBox)
+            box.delete(sellHighBox)
+            box.delete(sellLowBox)
+            buyHighBox:=na
+            buyLowBox:=na
+            sellHighBox:=na
+            sellLowBox:=na
+
+//--------------------------------------------------------------------------------------------------
+// Dashboard and live trade card
+//--------------------------------------------------------------------------------------------------
+bool marketOpen=barstate.isrealtime
+string dashboardMode=mode
+string dashboardBias=marketOpen?biasText:"CLOSED"
+// V1.8: HIGH and LOW risk zones are independent slots per direction, so
+// STATUS lists whichever direction(s) have any zone armed when nothing
+// is ACTIVE.
+bool armedAnyBuy=armedBuyHighArmed or armedBuyLowArmed
+bool armedAnySell=armedSellHighArmed or armedSellLowArmed
+string dashboardStatus=state=="ACTIVE"?"LIVE "+activeDirection+(activeBreakEvenArmed?" • BE ARMED":"")+" SIGNAL":(armedAnyBuy and armedAnySell)?"READY BUY + SELL SIGNAL":armedAnyBuy?"READY BUY SIGNAL":armedAnySell?"READY SELL SIGNAL":"WAIT"
+
+var table dashboard=table.new(position.bottom_right,2,3,bgcolor=panelColor,frame_color=premiumFrameColor,frame_width=1,border_color=color.new(premiumFrameColor,62),border_width=1)
+var table tradeCard=table.new(position.top_right,2,8,bgcolor=panelColor,frame_color=premiumFrameColor,frame_width=1,border_color=color.new(premiumFrameColor,62),border_width=1)
+
+if barstate.islast
+    table.clear(dashboard,0,0,1,2)
+    table.clear(tradeCard,0,0,1,7)
+
+    if showDashboard
+        table.cell(dashboard,0,0,"MODE",bgcolor=headerColor,text_color=neutralColor,text_size=size.small)
+        table.cell(dashboard,1,0,dashboardMode,bgcolor=headerColor,text_color=premiumTextColor,text_size=size.small,text_halign=text.align_right)
+        table.cell(dashboard,0,1,"BIAS",text_color=neutralColor,text_size=size.small)
+        table.cell(dashboard,1,1,dashboardBias,text_color=bullishBias?buyColor:bearishBias?sellColor:warningColor,text_size=size.small,text_halign=text.align_right)
+        table.cell(dashboard,0,2,"STATUS",text_color=neutralColor,text_size=size.small)
+        table.cell(dashboard,1,2,dashboardStatus,text_color=state=="ACTIVE"?activeDirection=="BUY"?buyColor:sellColor:(armedAnyBuy or armedAnySell)?warningColor:neutralColor,text_size=size.small,text_halign=text.align_right)
+
+    bool cardVisible=showTradeCard and (state=="ACTIVE" or resultVisible)
+    if cardVisible
+        bool showingResult=resultVisible
+        string cardDirection=showingResult?resultCardDirection:activeDirection
+        string cardTitle=showingResult?resultCardStatus:"LIVE "+activeDirection+" SIGNAL"
+        color cardHeader=showingResult?(resultCardStatus=="TP HIT"?buyColor:resultCardStatus=="BE HIT"?warningColor:sellColor):(activeDirection=="BUY"?buyColor:sellColor)
+        float cardEntry=showingResult?resultCardEntry:activeEntry
+        float cardTP=showingResult?resultCardTP:activeTP
+        float cardSL=showingResult?resultCardSL:(activeBreakEvenArmed?activeEntry:activeSL)
+        int cardConfluences=showingResult?resultCardConfluences:activeConfluences
+        string cardRisk=showingResult?resultCardRisk:activeRisk
+        string cardConfirmation=showingResult?resultCardConfirmation:activeConfirmation
+        string cardExtraReasons=showingResult?resultCardExtraReasons:activeExtraReasons
+        float tracked=showingResult?resultCardExit:close
+        float liveMove=cardDirection=="BUY"?tracked-cardEntry:cardEntry-tracked
+        float livePips=showingResult?resultCardPips:liveMove/pipSize
+        string reasons=cardRisk+" ZONE\n"+str.upper(cardConfirmation)+cardExtraReasons+(not showingResult and activeBreakEvenArmed?"\nBREAK-EVEN ARMED +"+str.tostring(activeBreakEvenTriggerPips,"#")+" PIPS":"")
+
+        string confidenceText=f_confidence_label(cardConfluences)
+        color confidenceColor=cardConfluences>=4?buyColor:cardConfluences>=3?color.white:warningColor
+
+        table.cell(tradeCard,0,0,cardTitle,bgcolor=cardHeader,text_color=premiumTextColor,text_size=size.small,text_halign=text.align_center)
+        table.cell(tradeCard,0,1,"MODE",text_color=neutralColor,text_size=size.small)
+        table.cell(tradeCard,1,1,mode+" • "+entryTfLabel,text_color=premiumTextColor,text_size=size.small,text_halign=text.align_right)
+        table.cell(tradeCard,0,2,"CONFIDENCE",text_color=neutralColor,text_size=size.small)
+        table.cell(tradeCard,1,2,confidenceText,text_color=confidenceColor,text_size=size.small,text_halign=text.align_right)
+        table.cell(tradeCard,0,3,"ENTRY",text_color=neutralColor,text_size=size.small)
+        table.cell(tradeCard,1,3,f_price(cardEntry),text_color=premiumTextColor,text_size=size.small,text_halign=text.align_right)
+        table.cell(tradeCard,0,4,"TP",text_color=neutralColor,text_size=size.small)
+        table.cell(tradeCard,1,4,f_price(cardTP),text_color=buyColor,text_size=size.small,text_halign=text.align_right)
+        table.cell(tradeCard,0,5,"SL",text_color=neutralColor,text_size=size.small)
+        table.cell(tradeCard,1,5,f_price(cardSL),text_color=sellColor,text_size=size.small,text_halign=text.align_right)
+        table.cell(tradeCard,0,6,"P/L",text_color=neutralColor,text_size=size.small)
+        table.cell(tradeCard,1,6,f_signed(livePips),text_color=livePips>=0?buyColor:sellColor,text_size=size.small,text_halign=text.align_right)
+        table.cell(tradeCard,0,7,"WHY THIS TRADE",text_color=neutralColor,text_size=size.small)
+        table.cell(tradeCard,1,7,reasons,text_color=premiumTextColor,text_size=size.small,text_halign=text.align_left)
