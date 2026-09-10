@@ -1,0 +1,14 @@
+{
+  "name": "ezymap-license-server",
+  "version": "1.0.0",
+  "description": "License/subscription server for the EzyMap MT5 tool suite (Bundle + Elite5 products).",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "admin": "node admin.js"
+  },
+  "dependencies": {
+    "dotenv": "^16.4.5",
+    "express": "^4.19.2"
+  }
+}
