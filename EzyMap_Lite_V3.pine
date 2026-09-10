@@ -1,0 +1,355 @@
+//@version=6
+indicator("EzyMap Lite V3", shorttitle="EzyMapLite", overlay=true, max_bars_back=5000, max_lines_count=30, max_boxes_count=20, max_labels_count=50, dynamic_requests=true)
+
+//==================================================================================================
+// EZYMAP LITE V3
+// Map-only build derived from EzyMap Pro V3. Draws the same direction S&R
+// levels (S1/S2/R1/R2) and the same four supporting BUY/SELL HIGH/LOW RISK
+// zones as Pro, using identical mapping logic — but provides no trading
+// signal of any kind:
+//   • No READY/ARMED state, no entry-zone box, no LIVE promotion
+//   • No TP/SL/BE tracking, no trade card, no BUY/SELL markers
+//   • No alerts of any kind
+// Dashboard is reduced to two rows: MODE and BIAS.
+// Supported chart timeframes are M1 through H4 only (same range as Pro's
+// entry timeframe), matching Pro's routing matrix for direction/support.
+//
+// Carries forward the V3 zone-drawing refinement from Pro: each S1/S2/R1/R2
+// zone is now the rejection wick only on the single candle nearest to CMP
+// that overlaps the level — low-to-close for a support/BUY zone,
+// close-to-high for a resistance/SELL zone — instead of the full candle
+// range. This needed the support-timeframe candle bank to also carry close
+// prices (previously only high/low/time), so f_support_bank() and the
+// supportCloses request.security/array wiring were added alongside it.
+//
+// This build only computes what the map (S1/S2/R1/R2 + the four zones) and
+// the two-row dashboard actually consume — no confirmation/confluence
+// engine, no signal state machine, matching the original V1.0 Lite's
+// map-only scope.
+//==================================================================================================
+
+//--------------------------------------------------------------------------------------------------
+// Inputs
+//--------------------------------------------------------------------------------------------------
+const string G1="01 • Engine"
+const string G4="02 • Display"
+const string G6="03 • Premium Theme"
+
+string chartTfSelection=input.string("AUTO","Chart Timeframe",options=["AUTO","1","5","15","30","60","240"],group=G1,display=display.none)
+const int directionEmaLength=13
+float levelDistinctPips=input.float(10.0,"Minimum Level Separation",minval=1.0,maxval=100.0,step=1.0,group=G1,display=display.none)
+
+bool showDirectionLevels=input.bool(true,"Show Direction S&R",group=G4,display=display.none)
+bool showSupportingZones=input.bool(true,"Show Supporting Zones",group=G4,display=display.none)
+bool showDashboard=input.bool(true,"Show Dashboard",group=G4,display=display.none)
+
+color buyColor=input.color(color.rgb(0,208,142),"BUY",inline="A",group=G6,display=display.none)
+color sellColor=input.color(color.rgb(235,72,96),"SELL",inline="A",group=G6,display=display.none)
+color supportColor=input.color(color.rgb(52,211,176),"Support",inline="B",group=G6,display=display.none)
+color resistanceColor=input.color(color.rgb(237,185,58),"Resistance",inline="B",group=G6,display=display.none)
+color panelColor=input.color(color.rgb(7,10,14),"Panel",inline="C",group=G6,display=display.none)
+color headerColor=input.color(color.rgb(20,26,33),"Header",inline="C",group=G6,display=display.none)
+color neutralColor=input.color(color.rgb(204,211,218),"Neutral",inline="D",group=G6,display=display.none)
+color warningColor=input.color(color.rgb(240,158,38),"Warning",inline="D",group=G6,display=display.none)
+
+color premiumFrameColor=color.rgb(66,75,86)
+color premiumTextColor=color.rgb(239,243,247)
+
+//--------------------------------------------------------------------------------------------------
+// Timeframe routing
+//--------------------------------------------------------------------------------------------------
+float chartSeconds=timeframe.in_seconds()
+string actualChartTf=chartSeconds==60.0?"1":chartSeconds==300.0?"5":chartSeconds==900.0?"15":chartSeconds==1800.0?"30":chartSeconds==3600.0?"60":chartSeconds==14400.0?"240":"15"
+
+// AUTO follows the actual chart. Manual selection remains available.
+string selectedChartTf=chartTfSelection=="AUTO"?actualChartTf:chartTfSelection
+string mode=selectedChartTf=="1" or selectedChartTf=="5"?"SCALP":selectedChartTf=="15" or selectedChartTf=="30"?"INTRADAY":"SWING"
+
+// Exact routing matrix (matches Pro):
+// M1  -> M30 direction / M5 support
+// M5  -> H1 direction / M15 support
+// M15 -> H4 direction / M30 support
+// M30 -> Daily direction / H1 support
+// H1  -> Weekly direction / H4 support
+// H4  -> Monthly direction / Daily support
+string directionTf=selectedChartTf=="1"?"30":selectedChartTf=="5"?"60":selectedChartTf=="15"?"240":selectedChartTf=="30"?"D":selectedChartTf=="60"?"W":"M"
+string supportTf=selectedChartTf=="1"?"5":selectedChartTf=="5"?"15":selectedChartTf=="15"?"30":selectedChartTf=="30"?"60":selectedChartTf=="60"?"240":"D"
+string entryTf=selectedChartTf
+
+//--------------------------------------------------------------------------------------------------
+// Helpers
+//--------------------------------------------------------------------------------------------------
+f_price(float value)=>na(value)?"—":str.tostring(value,format.mintick)
+
+f_direction_bank()=>
+    [close[1],close[2],close[3],close[4],close[5],close[6],close[7],close[8],close[9],close[10],close[11],close[12],close[13],close[14],close[15],close[16],close[17],close[18],close[19],close[20],close[21],close[22],close[23],close[24],close[25],close[26],close[27],close[28],close[29],close[30],close[31],close[32],close[33],close[34],close[35],close[36],close[37],close[38],close[39],close[40],close[41],close[42],close[43],close[44],close[45],close[46],close[47],close[48],close[49],close[50],close[51],close[52],close[53],close[54],close[55],close[56],close[57],close[58],close[59],close[60],close[61],close[62],close[63],close[64]]
+
+f_support_bank()=>
+    [high[1],high[2],high[3],high[4],high[5],high[6],high[7],high[8],high[9],high[10],high[11],high[12],high[13],high[14],high[15],high[16],high[17],high[18],high[19],high[20],high[21],high[22],high[23],high[24],high[25],high[26],high[27],high[28],high[29],high[30],high[31],high[32],high[33],high[34],high[35],high[36],high[37],high[38],high[39],high[40],low[1],low[2],low[3],low[4],low[5],low[6],low[7],low[8],low[9],low[10],low[11],low[12],low[13],low[14],low[15],low[16],low[17],low[18],low[19],low[20],low[21],low[22],low[23],low[24],low[25],low[26],low[27],low[28],low[29],low[30],low[31],low[32],low[33],low[34],low[35],low[36],low[37],low[38],low[39],low[40],close[1],close[2],close[3],close[4],close[5],close[6],close[7],close[8],close[9],close[10],close[11],close[12],close[13],close[14],close[15],close[16],close[17],close[18],close[19],close[20],close[21],close[22],close[23],close[24],close[25],close[26],close[27],close[28],close[29],close[30],close[31],close[32],close[33],close[34],close[35],close[36],close[37],close[38],close[39],close[40],time[1],time[2],time[3],time[4],time[5],time[6],time[7],time[8],time[9],time[10],time[11],time[12],time[13],time[14],time[15],time[16],time[17],time[18],time[19],time[20],time[21],time[22],time[23],time[24],time[25],time[26],time[27],time[28],time[29],time[30],time[31],time[32],time[33],time[34],time[35],time[36],time[37],time[38],time[39],time[40]]
+
+// S2 must be at least minimumDistance below S1.
+// R2 must be at least minimumDistance above R1.
+f_pick_direction_levels(array<float> closes,float reference,float minimumDistance,float fallbackLow,float fallbackHigh,float fallbackATR)=>
+    float s1=na
+    float s2=na
+    float r1=na
+    float r2=na
+    float s1Distance=na
+    float s2Distance=na
+    float r1Distance=na
+    float r2Distance=na
+
+    for i=0 to array.size(closes)-1
+        float level=array.get(closes,i)
+        if not na(level) and level<reference
+            float distance=reference-level
+            if na(s1Distance) or distance<s1Distance
+                s1:=level
+                s1Distance:=distance
+        if not na(level) and level>reference
+            float distance=level-reference
+            if na(r1Distance) or distance<r1Distance
+                r1:=level
+                r1Distance:=distance
+
+    for i=0 to array.size(closes)-1
+        float level=array.get(closes,i)
+        if not na(level) and not na(s1) and level<=s1-minimumDistance
+            float distance=s1-level
+            if na(s2Distance) or distance<s2Distance
+                s2:=level
+                s2Distance:=distance
+        if not na(level) and not na(r1) and level>=r1+minimumDistance
+            float distance=level-r1
+            if na(r2Distance) or distance<r2Distance
+                r2:=level
+                r2Distance:=distance
+
+    float safeATR=math.max(nz(fallbackATR),minimumDistance*5.0)
+    if na(s1)
+        s1:=math.min(nz(fallbackLow,reference-safeATR),reference-minimumDistance)
+    if na(r1)
+        r1:=math.max(nz(fallbackHigh,reference+safeATR),reference+minimumDistance)
+    if na(s2)
+        s2:=math.min(nz(fallbackLow,s1-safeATR),s1-minimumDistance)
+    if na(r2)
+        r2:=math.max(nz(fallbackHigh,r1+safeATR),r1+minimumDistance)
+
+    [math.round_to_mintick(s1),math.round_to_mintick(s2),math.round_to_mintick(r1),math.round_to_mintick(r2)]
+
+f_support_zone(float level,bool isSupport,array<float> highs,array<float> lows,array<float> closes,array<int> times)=>
+    float nearestLo=na
+    float nearestHi=na
+    float nearestClose=na
+    int nearestTime=na
+    float fallbackRange=na
+    float fallbackDistance=na
+    int fallbackTime=na
+
+    for i=0 to array.size(highs)-1
+        float candleHigh=array.get(highs,i)
+        float candleLow=array.get(lows,i)
+        float candleClose=array.get(closes,i)
+        int candleTime=array.get(times,i)
+        bool valid=not na(candleHigh) and not na(candleLow) and candleHigh>candleLow
+
+        if valid
+            bool crosses=candleLow<=level and candleHigh>=level
+            // Arrays are newest first, so the first crossing candle found is
+            // the one nearest to CMP — that single candle defines the zone.
+            if crosses and na(nearestLo)
+                nearestLo:=candleLow
+                nearestHi:=candleHigh
+                nearestClose:=candleClose
+                nearestTime:=candleTime
+
+            float midpoint=(candleHigh+candleLow)/2.0
+            float distance=math.abs(midpoint-level)
+            if na(fallbackDistance) or distance<fallbackDistance
+                fallbackDistance:=distance
+                fallbackRange:=candleHigh-candleLow
+                fallbackTime:=candleTime
+
+    float zoneLo=na
+    float zoneHi=na
+    int zoneTime=na
+    float minHeight=syminfo.mintick*10.0
+
+    if not na(nearestLo)
+        // The zone is the rejection wick only, not the full candle range:
+        // low-to-close for a support/BUY zone, close-to-high for a
+        // resistance/SELL zone. A minimum height guards against a candle
+        // that closed exactly at its high or low producing a zero-height zone.
+        if isSupport
+            zoneLo:=nearestLo
+            zoneHi:=nearestClose
+            if zoneHi-zoneLo<minHeight
+                zoneLo:=zoneHi-minHeight
+        else
+            zoneLo:=nearestClose
+            zoneHi:=nearestHi
+            if zoneHi-zoneLo<minHeight
+                zoneHi:=zoneLo+minHeight
+        zoneTime:=nearestTime
+    else
+        float preservedRange=math.max(nz(fallbackRange),syminfo.mintick*10.0)
+        zoneLo:=level-preservedRange*0.5
+        zoneHi:=level+preservedRange*0.5
+        zoneTime:=fallbackTime
+
+    [math.round_to_mintick(zoneLo),math.round_to_mintick(zoneHi),zoneTime]
+
+//--------------------------------------------------------------------------------------------------
+// Gold / BTC pip and round-number engine
+//--------------------------------------------------------------------------------------------------
+string symbolKey=str.upper(syminfo.ticker+" "+syminfo.root+" "+syminfo.description)
+bool isGold=str.contains(symbolKey,"XAU") or str.contains(symbolKey,"GOLD")
+bool isBTC=str.contains(symbolKey,"BTC") or str.contains(symbolKey,"XBT")
+float pipSize=isGold?math.max(0.10,syminfo.mintick):isBTC?math.max(1.0,syminfo.mintick):syminfo.mintick
+// Minimum second-level distance:
+// XAUUSD: 70 points. With 0.10 per Gold point, this equals 7.0 price.
+// BTCUSD: 70 points. With 1.00 per BTC point, this equals 70.0 price.
+float goldSecondLevelDistance=70.0*pipSize
+float btcSecondLevelDistance=70.0*pipSize
+float minimumLevelDistance=isGold?goldSecondLevelDistance:isBTC?btcSecondLevelDistance:math.max(levelDistinctPips*pipSize,syminfo.mintick*5.0)
+
+//--------------------------------------------------------------------------------------------------
+// Confirmed timeframe data
+//--------------------------------------------------------------------------------------------------
+float entryReference=request.security(syminfo.tickerid,entryTf,close[1],gaps=barmerge.gaps_off,lookahead=barmerge.lookahead_on)
+
+[dirCloseBank1,dirCloseBank2,dirCloseBank3,dirCloseBank4,dirCloseBank5,dirCloseBank6,dirCloseBank7,dirCloseBank8,dirCloseBank9,dirCloseBank10,dirCloseBank11,dirCloseBank12,dirCloseBank13,dirCloseBank14,dirCloseBank15,dirCloseBank16,dirCloseBank17,dirCloseBank18,dirCloseBank19,dirCloseBank20,dirCloseBank21,dirCloseBank22,dirCloseBank23,dirCloseBank24,dirCloseBank25,dirCloseBank26,dirCloseBank27,dirCloseBank28,dirCloseBank29,dirCloseBank30,dirCloseBank31,dirCloseBank32,dirCloseBank33,dirCloseBank34,dirCloseBank35,dirCloseBank36,dirCloseBank37,dirCloseBank38,dirCloseBank39,dirCloseBank40,dirCloseBank41,dirCloseBank42,dirCloseBank43,dirCloseBank44,dirCloseBank45,dirCloseBank46,dirCloseBank47,dirCloseBank48,dirCloseBank49,dirCloseBank50,dirCloseBank51,dirCloseBank52,dirCloseBank53,dirCloseBank54,dirCloseBank55,dirCloseBank56,dirCloseBank57,dirCloseBank58,dirCloseBank59,dirCloseBank60,dirCloseBank61,dirCloseBank62,dirCloseBank63,dirCloseBank64]=request.security(syminfo.tickerid,directionTf,f_direction_bank(),gaps=barmerge.gaps_off,lookahead=barmerge.lookahead_on)
+array<float> directionCloses=array.from(dirCloseBank1,dirCloseBank2,dirCloseBank3,dirCloseBank4,dirCloseBank5,dirCloseBank6,dirCloseBank7,dirCloseBank8,dirCloseBank9,dirCloseBank10,dirCloseBank11,dirCloseBank12,dirCloseBank13,dirCloseBank14,dirCloseBank15,dirCloseBank16,dirCloseBank17,dirCloseBank18,dirCloseBank19,dirCloseBank20,dirCloseBank21,dirCloseBank22,dirCloseBank23,dirCloseBank24,dirCloseBank25,dirCloseBank26,dirCloseBank27,dirCloseBank28,dirCloseBank29,dirCloseBank30,dirCloseBank31,dirCloseBank32,dirCloseBank33,dirCloseBank34,dirCloseBank35,dirCloseBank36,dirCloseBank37,dirCloseBank38,dirCloseBank39,dirCloseBank40,dirCloseBank41,dirCloseBank42,dirCloseBank43,dirCloseBank44,dirCloseBank45,dirCloseBank46,dirCloseBank47,dirCloseBank48,dirCloseBank49,dirCloseBank50,dirCloseBank51,dirCloseBank52,dirCloseBank53,dirCloseBank54,dirCloseBank55,dirCloseBank56,dirCloseBank57,dirCloseBank58,dirCloseBank59,dirCloseBank60,dirCloseBank61,dirCloseBank62,dirCloseBank63,dirCloseBank64)
+
+[directionClose,directionEMA,directionATR,directionLowest,directionHighest]=request.security(
+    syminfo.tickerid,directionTf,
+    [close[1],ta.ema(close,directionEmaLength)[1],ta.atr(14)[1],ta.lowest(low,100)[1],ta.highest(high,100)[1]],
+    gaps=barmerge.gaps_off,lookahead=barmerge.lookahead_on)
+
+[supportHigh1,supportHigh2,supportHigh3,supportHigh4,supportHigh5,supportHigh6,supportHigh7,supportHigh8,supportHigh9,supportHigh10,supportHigh11,supportHigh12,supportHigh13,supportHigh14,supportHigh15,supportHigh16,supportHigh17,supportHigh18,supportHigh19,supportHigh20,supportHigh21,supportHigh22,supportHigh23,supportHigh24,supportHigh25,supportHigh26,supportHigh27,supportHigh28,supportHigh29,supportHigh30,supportHigh31,supportHigh32,supportHigh33,supportHigh34,supportHigh35,supportHigh36,supportHigh37,supportHigh38,supportHigh39,supportHigh40,supportLow1,supportLow2,supportLow3,supportLow4,supportLow5,supportLow6,supportLow7,supportLow8,supportLow9,supportLow10,supportLow11,supportLow12,supportLow13,supportLow14,supportLow15,supportLow16,supportLow17,supportLow18,supportLow19,supportLow20,supportLow21,supportLow22,supportLow23,supportLow24,supportLow25,supportLow26,supportLow27,supportLow28,supportLow29,supportLow30,supportLow31,supportLow32,supportLow33,supportLow34,supportLow35,supportLow36,supportLow37,supportLow38,supportLow39,supportLow40,supportClose1,supportClose2,supportClose3,supportClose4,supportClose5,supportClose6,supportClose7,supportClose8,supportClose9,supportClose10,supportClose11,supportClose12,supportClose13,supportClose14,supportClose15,supportClose16,supportClose17,supportClose18,supportClose19,supportClose20,supportClose21,supportClose22,supportClose23,supportClose24,supportClose25,supportClose26,supportClose27,supportClose28,supportClose29,supportClose30,supportClose31,supportClose32,supportClose33,supportClose34,supportClose35,supportClose36,supportClose37,supportClose38,supportClose39,supportClose40,supportTime1,supportTime2,supportTime3,supportTime4,supportTime5,supportTime6,supportTime7,supportTime8,supportTime9,supportTime10,supportTime11,supportTime12,supportTime13,supportTime14,supportTime15,supportTime16,supportTime17,supportTime18,supportTime19,supportTime20,supportTime21,supportTime22,supportTime23,supportTime24,supportTime25,supportTime26,supportTime27,supportTime28,supportTime29,supportTime30,supportTime31,supportTime32,supportTime33,supportTime34,supportTime35,supportTime36,supportTime37,supportTime38,supportTime39,supportTime40]=request.security(syminfo.tickerid,supportTf,f_support_bank(),gaps=barmerge.gaps_off,lookahead=barmerge.lookahead_on)
+array<float> supportHighs=array.from(supportHigh1,supportHigh2,supportHigh3,supportHigh4,supportHigh5,supportHigh6,supportHigh7,supportHigh8,supportHigh9,supportHigh10,supportHigh11,supportHigh12,supportHigh13,supportHigh14,supportHigh15,supportHigh16,supportHigh17,supportHigh18,supportHigh19,supportHigh20,supportHigh21,supportHigh22,supportHigh23,supportHigh24,supportHigh25,supportHigh26,supportHigh27,supportHigh28,supportHigh29,supportHigh30,supportHigh31,supportHigh32,supportHigh33,supportHigh34,supportHigh35,supportHigh36,supportHigh37,supportHigh38,supportHigh39,supportHigh40)
+array<float> supportLows=array.from(supportLow1,supportLow2,supportLow3,supportLow4,supportLow5,supportLow6,supportLow7,supportLow8,supportLow9,supportLow10,supportLow11,supportLow12,supportLow13,supportLow14,supportLow15,supportLow16,supportLow17,supportLow18,supportLow19,supportLow20,supportLow21,supportLow22,supportLow23,supportLow24,supportLow25,supportLow26,supportLow27,supportLow28,supportLow29,supportLow30,supportLow31,supportLow32,supportLow33,supportLow34,supportLow35,supportLow36,supportLow37,supportLow38,supportLow39,supportLow40)
+array<float> supportCloses=array.from(supportClose1,supportClose2,supportClose3,supportClose4,supportClose5,supportClose6,supportClose7,supportClose8,supportClose9,supportClose10,supportClose11,supportClose12,supportClose13,supportClose14,supportClose15,supportClose16,supportClose17,supportClose18,supportClose19,supportClose20,supportClose21,supportClose22,supportClose23,supportClose24,supportClose25,supportClose26,supportClose27,supportClose28,supportClose29,supportClose30,supportClose31,supportClose32,supportClose33,supportClose34,supportClose35,supportClose36,supportClose37,supportClose38,supportClose39,supportClose40)
+array<int> supportTimes=array.from(supportTime1,supportTime2,supportTime3,supportTime4,supportTime5,supportTime6,supportTime7,supportTime8,supportTime9,supportTime10,supportTime11,supportTime12,supportTime13,supportTime14,supportTime15,supportTime16,supportTime17,supportTime18,supportTime19,supportTime20,supportTime21,supportTime22,supportTime23,supportTime24,supportTime25,supportTime26,supportTime27,supportTime28,supportTime29,supportTime30,supportTime31,supportTime32,supportTime33,supportTime34,supportTime35,supportTime36,supportTime37,supportTime38,supportTime39,supportTime40)
+
+//--------------------------------------------------------------------------------------------------
+// One mapping engine used by both drawing and signals (Pro parity)
+//--------------------------------------------------------------------------------------------------
+[S1,S2,R1,R2]=f_pick_direction_levels(directionCloses,entryReference,minimumLevelDistance,directionLowest,directionHighest,directionATR)
+
+bool bullishBias=directionClose>directionEMA
+bool bearishBias=directionClose<directionEMA
+string biasText=bullishBias?"BULLISH":bearishBias?"BEARISH":"NEUTRAL"
+
+[buyHighLo,buyHighHi,buyHighTime]=f_support_zone(S1,true,supportHighs,supportLows,supportCloses,supportTimes)
+[buyLowLo,buyLowHi,buyLowTime]=f_support_zone(S2,true,supportHighs,supportLows,supportCloses,supportTimes)
+[sellHighLo,sellHighHi,sellHighTime]=f_support_zone(R1,false,supportHighs,supportLows,supportCloses,supportTimes)
+[sellLowLo,sellLowHi,sellLowTime]=f_support_zone(R2,false,supportHighs,supportLows,supportCloses,supportTimes)
+
+//--------------------------------------------------------------------------------------------------
+// Drawing only — S&R levels, supporting zones, and a 2-row dashboard
+//--------------------------------------------------------------------------------------------------
+var line s1Line=na
+var line s2Line=na
+var line r1Line=na
+var line r2Line=na
+var label s1Label=na
+var label s2Label=na
+var label r1Label=na
+var label r2Label=na
+var box buyHighBox=na
+var box buyLowBox=na
+var box sellHighBox=na
+var box sellLowBox=na
+
+int mapLeft=time-24*60*60*1000
+
+if barstate.islast
+    if showDirectionLevels
+        if na(s1Line)
+            s1Line:=line.new(mapLeft,S1,time,S1,xloc=xloc.bar_time,extend=extend.right,color=supportColor,width=2)
+            s2Line:=line.new(mapLeft,S2,time,S2,xloc=xloc.bar_time,extend=extend.right,color=color.new(supportColor,25),width=1)
+            r1Line:=line.new(mapLeft,R1,time,R1,xloc=xloc.bar_time,extend=extend.right,color=resistanceColor,width=2)
+            r2Line:=line.new(mapLeft,R2,time,R2,xloc=xloc.bar_time,extend=extend.right,color=color.new(resistanceColor,25),width=1)
+        line.set_xy1(s1Line,mapLeft,S1)
+        line.set_xy2(s1Line,time,S1)
+        line.set_xy1(s2Line,mapLeft,S2)
+        line.set_xy2(s2Line,time,S2)
+        line.set_xy1(r1Line,mapLeft,R1)
+        line.set_xy2(r1Line,time,R1)
+        line.set_xy1(r2Line,mapLeft,R2)
+        line.set_xy2(r2Line,time,R2)
+
+        if na(s1Label)
+            s1Label:=label.new(time,S1,"S1",xloc=xloc.bar_time,yloc=yloc.price,style=label.style_label_left,color=supportColor,textcolor=color.black,size=size.small)
+            s2Label:=label.new(time,S2,"S2",xloc=xloc.bar_time,yloc=yloc.price,style=label.style_label_left,color=color.new(supportColor,25),textcolor=color.black,size=size.small)
+            r1Label:=label.new(time,R1,"R1",xloc=xloc.bar_time,yloc=yloc.price,style=label.style_label_left,color=resistanceColor,textcolor=color.black,size=size.small)
+            r2Label:=label.new(time,R2,"R2",xloc=xloc.bar_time,yloc=yloc.price,style=label.style_label_left,color=color.new(resistanceColor,25),textcolor=color.black,size=size.small)
+
+        label.set_xy(s1Label,time,S1)
+        label.set_text(s1Label,"S1 - "+f_price(S1))
+        label.set_xy(s2Label,time,S2)
+        label.set_text(s2Label,"S2 - "+f_price(S2))
+        label.set_xy(r1Label,time,R1)
+        label.set_text(r1Label,"R1 - "+f_price(R1))
+        label.set_xy(r2Label,time,R2)
+        label.set_text(r2Label,"R2 - "+f_price(R2))
+    else
+        if not na(s1Line)
+            line.delete(s1Line)
+            line.delete(s2Line)
+            line.delete(r1Line)
+            line.delete(r2Line)
+            s1Line:=na
+            s2Line:=na
+            r1Line:=na
+            r2Line:=na
+        if not na(s1Label)
+            label.delete(s1Label)
+            label.delete(s2Label)
+            label.delete(r1Label)
+            label.delete(r2Label)
+            s1Label:=na
+            s2Label:=na
+            r1Label:=na
+            r2Label:=na
+
+    if showSupportingZones
+        if na(buyHighBox)
+            buyHighBox:=box.new(mapLeft,buyHighHi,time,buyHighLo,xloc=xloc.bar_time,extend=extend.right,bgcolor=color.new(supportColor,82),border_color=color.new(supportColor,20),border_width=2,text="BUY ZONE - HIGH RISK",text_color=color.black,text_size=size.small,text_halign=text.align_left)
+            buyLowBox:=box.new(mapLeft,buyLowHi,time,buyLowLo,xloc=xloc.bar_time,extend=extend.right,bgcolor=color.new(supportColor,68),border_color=supportColor,border_width=3,text="BUY ZONE - LOW RISK",text_color=color.black,text_size=size.small,text_halign=text.align_left)
+            sellHighBox:=box.new(mapLeft,sellHighHi,time,sellHighLo,xloc=xloc.bar_time,extend=extend.right,bgcolor=color.new(resistanceColor,82),border_color=color.new(resistanceColor,20),border_width=2,text="SELL ZONE - HIGH RISK",text_color=color.black,text_size=size.small,text_halign=text.align_left)
+            sellLowBox:=box.new(mapLeft,sellLowHi,time,sellLowLo,xloc=xloc.bar_time,extend=extend.right,bgcolor=color.new(resistanceColor,68),border_color=resistanceColor,border_width=3,text="SELL ZONE - LOW RISK",text_color=color.black,text_size=size.small,text_halign=text.align_left)
+
+        box.set_lefttop(buyHighBox,mapLeft,buyHighHi)
+        box.set_rightbottom(buyHighBox,time,buyHighLo)
+        box.set_lefttop(buyLowBox,mapLeft,buyLowHi)
+        box.set_rightbottom(buyLowBox,time,buyLowLo)
+        box.set_lefttop(sellHighBox,mapLeft,sellHighHi)
+        box.set_rightbottom(sellHighBox,time,sellHighLo)
+        box.set_lefttop(sellLowBox,mapLeft,sellLowHi)
+        box.set_rightbottom(sellLowBox,time,sellLowLo)
+    else
+        if not na(buyHighBox)
+            box.delete(buyHighBox)
+            box.delete(buyLowBox)
+            box.delete(sellHighBox)
+            box.delete(sellLowBox)
+            buyHighBox:=na
+            buyLowBox:=na
+            sellHighBox:=na
+            sellLowBox:=na
+
+bool marketOpen=barstate.isrealtime
+string dashboardMode=mode
+string dashboardBias=marketOpen?biasText:"CLOSED"
+
+var table dashboard=table.new(position.bottom_right,2,2,bgcolor=panelColor,frame_color=premiumFrameColor,frame_width=1,border_color=color.new(premiumFrameColor,62),border_width=1)
+
+if barstate.islast
+    if showDashboard
+        table.clear(dashboard,0,0,1,1)
+        table.cell(dashboard,0,0,"MODE",bgcolor=headerColor,text_color=premiumTextColor,text_size=size.small,text_halign=text.align_left)
+        table.cell(dashboard,1,0,dashboardMode,bgcolor=headerColor,text_color=premiumTextColor,text_size=size.small,text_halign=text.align_right)
+        table.cell(dashboard,0,1,"BIAS",text_color=neutralColor,text_size=size.small,text_halign=text.align_left)
+        table.cell(dashboard,1,1,dashboardBias,text_color=bullishBias?buyColor:bearishBias?sellColor:warningColor,text_size=size.small,text_halign=text.align_right)
